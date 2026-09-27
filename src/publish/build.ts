@@ -76,6 +76,15 @@ function shardOf(owner: string): string {
   return /[a-z]/.test(c) ? c : /[0-9]/.test(c) ? "#" : "_";
 }
 
+/** JSON.parse that tolerates a BOM and returns null rather than throwing. */
+function safeParse(text: string): any | null {
+  try {
+    return JSON.parse(text.replace(/^\uFEFF/, ""));
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const src = PATHS.corpus;
   if (!existsSync(src)) {
@@ -170,8 +179,31 @@ async function main() {
     }
   }
 
+  /**
+   * Content fingerprint of the index, EXCLUDING the timestamp.
+   *
+   * This is what makes the build idempotent. The manifest carries
+   * `generated_at`, which changes on every single run; writing it
+   * unconditionally made the "unchanged" shards look stale to git and failed
+   * CI's reproducibility check on every push, even though no data had actually
+   * changed. The fingerprint compares only what the site would actually serve.
+   */
+  const indexFingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        total: aliveForPublish.length,
+        corpus_total: all.length,
+        shards: manifestShards.map((s) => [s.file, s.count, s.bytes]),
+        categories: CATEGORIES.map((id) => [id, catTotals.get(id) ?? 0]),
+        schema: 2,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16);
+
   const manifest = {
     generated_at: new Date().toISOString(),
+    fingerprint: indexFingerprint,
     total: aliveForPublish.length,
     corpus_total: all.length,
     shards: manifestShards,
@@ -184,9 +216,24 @@ async function main() {
     uncategorized: aliveForPublish.filter((r) => classify(r.topics ?? []).categories.length === 0).length,
     schema: 2,
   };
-  await Bun.write(`${OUT}/manifest.json`, JSON.stringify(manifest, null, 2));
 
-  const manifestBytes = Buffer.byteLength(JSON.stringify(manifest));
+  /**
+   * Only rewrite the manifest when the index content actually changed. When
+   * only the timestamp would differ, keep the previous `generated_at` so the
+   * file stays byte-identical and git sees no change.
+   */
+  const manifestPath = `${OUT}/manifest.json`;
+  const prior = existsSync(manifestPath) ? safeParse(readFileSync(manifestPath, "utf8")) : null;
+  const manifestChanged = !prior || prior.fingerprint !== indexFingerprint;
+  if (!manifestChanged && prior.generated_at) {
+    manifest.generated_at = prior.generated_at;
+  }
+  const manifestBody = JSON.stringify(manifest, null, 2);
+  if (manifestChanged || !existsSync(manifestPath)) {
+    await Bun.write(manifestPath, manifestBody);
+  }
+
+  const manifestBytes = Buffer.byteLength(manifestBody);
   const fmt = (b: number) => (b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`);
 
   console.log(`\n[build] ${manifestShards.length} shards -> ${OUT}/`);

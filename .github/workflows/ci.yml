@@ -76,6 +76,7 @@ jobs:
 
       - name: Verify the build is reproducible (idempotent)
         run: |
+          bun run src/publish/test-idempotent.ts
           bun run src/publish/build.ts
           if [ -n "$(git status --porcelain src/site/data)" ]; then
             echo "::error::src/site/data is stale — run 'bun run src/publish/build.ts' and commit the result"
