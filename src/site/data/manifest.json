@@ -1,0 +1,218 @@
+{
+  "generated_at": "2026-09-27T12:20:09.235Z",
+  "total": 5772,
+  "corpus_total": 7351,
+  "shards": [
+    {
+      "id": "#",
+      "file": "#.json",
+      "count": 48,
+      "bytes": 16175
+    },
+    {
+      "id": "a",
+      "file": "a.json",
+      "count": 533,
+      "bytes": 178542
+    },
+    {
+      "id": "b",
+      "file": "b.json",
+      "count": 215,
+      "bytes": 72424
+    },
+    {
+      "id": "c",
+      "file": "c.json",
+      "count": 322,
+      "bytes": 110580
+    },
+    {
+      "id": "d",
+      "file": "d.json",
+      "count": 295,
+      "bytes": 94182
+    },
+    {
+      "id": "e",
+      "file": "e.json",
+      "count": 167,
+      "bytes": 53431
+    },
+    {
+      "id": "f",
+      "file": "f.json",
+      "count": 181,
+      "bytes": 58286
+    },
+    {
+      "id": "g",
+      "file": "g.json",
+      "count": 171,
+      "bytes": 53683
+    },
+    {
+      "id": "h",
+      "file": "h.json",
+      "count": 223,
+      "bytes": 71405
+    },
+    {
+      "id": "i",
+      "file": "i.json",
+      "count": 166,
+      "bytes": 52371
+    },
+    {
+      "id": "j",
+      "file": "j.json",
+      "count": 261,
+      "bytes": 85184
+    },
+    {
+      "id": "k",
+      "file": "k.json",
+      "count": 179,
+      "bytes": 58563
+    },
+    {
+      "id": "l",
+      "file": "l.json",
+      "count": 217,
+      "bytes": 69432
+    },
+    {
+      "id": "m",
+      "file": "m.json",
+      "count": 457,
+      "bytes": 150308
+    },
+    {
+      "id": "n",
+      "file": "n.json",
+      "count": 209,
+      "bytes": 69745
+    },
+    {
+      "id": "o",
+      "file": "o.json",
+      "count": 147,
+      "bytes": 45851
+    },
+    {
+      "id": "p",
+      "file": "p.json",
+      "count": 230,
+      "bytes": 76660
+    },
+    {
+      "id": "q",
+      "file": "q.json",
+      "count": 37,
+      "bytes": 11124
+    },
+    {
+      "id": "r",
+      "file": "r.json",
+      "count": 259,
+      "bytes": 82949
+    },
+    {
+      "id": "s",
+      "file": "s.json",
+      "count": 545,
+      "bytes": 182000
+    },
+    {
+      "id": "t",
+      "file": "t.json",
+      "count": 273,
+      "bytes": 88052
+    },
+    {
+      "id": "u",
+      "file": "u.json",
+      "count": 60,
+      "bytes": 19249
+    },
+    {
+      "id": "v",
+      "file": "v.json",
+      "count": 190,
+      "bytes": 60470
+    },
+    {
+      "id": "w",
+      "file": "w.json",
+      "count": 152,
+      "bytes": 47422
+    },
+    {
+      "id": "x",
+      "file": "x.json",
+      "count": 54,
+      "bytes": 17140
+    },
+    {
+      "id": "y",
+      "file": "y.json",
+      "count": 94,
+      "bytes": 29653
+    },
+    {
+      "id": "z",
+      "file": "z.json",
+      "count": 87,
+      "bytes": 29499
+    }
+  ],
+  "categories": [
+    {
+      "id": "portfolio",
+      "label": "Portfolio & CV",
+      "count": 1323
+    },
+    {
+      "id": "games",
+      "label": "Games",
+      "count": 380
+    },
+    {
+      "id": "docs",
+      "label": "Docs & Wiki",
+      "count": 1085
+    },
+    {
+      "id": "blog",
+      "label": "Blog",
+      "count": 888
+    },
+    {
+      "id": "dashboards",
+      "label": "Dashboards & Data",
+      "count": 450
+    },
+    {
+      "id": "tools",
+      "label": "Tools & Utilities",
+      "count": 535
+    },
+    {
+      "id": "learning",
+      "label": "Learning & Reference",
+      "count": 538
+    },
+    {
+      "id": "showcase",
+      "label": "Showcase & Data Viz",
+      "count": 207
+    },
+    {
+      "id": "libraries",
+      "label": "Libraries & Frameworks",
+      "count": 536
+    }
+  ],
+  "uncategorized": 1435,
+  "schema": 2
+}

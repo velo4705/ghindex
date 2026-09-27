@@ -1,0 +1,24 @@
+[
+  {
+    "at": "2026-09-27T12:02:58.353Z",
+    "corpus": 7351,
+    "alive": 5779,
+    "alive_pct": 78.6,
+    "suspect": 1252,
+    "flaky": 320,
+    "title_yield": 75.8,
+    "desc_yield": 44.6,
+    "never_probed": 0
+  },
+  {
+    "at": "2026-09-27T12:02:58.608Z",
+    "corpus": 7351,
+    "alive": 5779,
+    "alive_pct": 78.6,
+    "suspect": 1252,
+    "flaky": 320,
+    "title_yield": 75.8,
+    "desc_yield": 44.6,
+    "never_probed": 0
+  }
+]

@@ -1,0 +1,3 @@
+# GitHub Pages serves from /repo-name/ on project pages, but using a custom
+# domain or user/org page makes the root path work. Adding .nojekyll stops
+# Jekyll from ignoring files/dirs that begin with an underscore.

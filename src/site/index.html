@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+<meta name="description" content="A searchable index of GitHub Pages sites." />
+<title>ghindex — index of GitHub Pages sites</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --fg:#e6edf3; --muted:#8b949e;
+    --line:#30363d; --accent:#58a6ff; --ok:#3fb950;
+    --row-h: 108px; --card-w: 300px; --card-h: 300px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  a { color:var(--accent); }
+  header { padding:1rem 1rem .75rem; border-bottom:1px solid var(--line);
+           position:sticky; top:0; background:var(--bg); z-index:10; }
+  .hrow { display:flex; align-items:baseline; gap:.6rem; flex-wrap:wrap; }
+  h1 { margin:0; font-size:1.15rem; }
+  .sub { color:var(--muted); font-size:.8rem; }
+  main { padding:1rem; max-width:1400px; margin:0 auto; }
+  .controls { display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.75rem; align-items:center; }
+  input[type=search] { flex:1 1 260px; padding:.55rem .75rem; font-size:.95rem;
+    border-radius:6px; border:1px solid var(--line); background:var(--panel); color:var(--fg); }
+  input[type=search]:focus-visible, button:focus-visible, select:focus-visible,
+  input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  button, select { padding:.5rem .8rem; border-radius:6px; border:1px solid var(--line);
+    background:var(--panel); color:var(--fg); cursor:pointer; font-size:.9rem; }
+  button:hover, select:hover { border-color:var(--accent); }
+  button[aria-pressed="true"] { background:var(--accent); color:#04121f; border-color:var(--accent);
+    font-weight:600; }
+  .meta { color:var(--muted); font-size:.8rem; margin:.75rem 0; min-height:1.2em; }
+  .facets { display:flex; gap:.35rem; flex-wrap:wrap; margin-bottom:.5rem; }
+  .facet { font-size:.75rem; padding:.2rem .55rem; border-radius:999px; cursor:pointer;
+    background:var(--panel); border:1px solid var(--line); color:var(--muted);
+    background:none; }
+  .facet:hover { border-color:var(--accent); color:var(--fg); }
+  .facet[aria-pressed="true"] { background:var(--accent); color:#04121f; border-color:var(--accent); }
+  .facet .n { opacity:.65; margin-left:.25rem; }
+
+  /* Categories: the primary browse control. Bigger and above raw topics. */
+  .cats { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.7rem; }
+  .cat { font-size:.82rem; font-weight:600; padding:.35rem .7rem; border-radius:999px;
+    cursor:pointer; background:var(--panel); border:1px solid var(--line); color:var(--fg); }
+  .cat:hover { border-color:var(--accent); }
+  .cat[aria-pressed="true"] { background:var(--accent); color:#04121f; border-color:var(--accent); }
+  .cat .n { opacity:.6; margin-left:.3rem; font-weight:400; font-size:.75rem; }
+  .chips { display:flex; gap:.3rem; flex-wrap:wrap; align-items:center; }
+  .cat-chip { font-size:.68rem; padding:.08rem .45rem; border-radius:999px;
+    background:#1f6feb22; border:1px solid #1f6feb55; color:#79c0ff; }
+
+  /* ---- row view ---- */
+  .list { display:flex; flex-direction:column; gap:.5rem; }
+  .row { padding:.7rem .8rem; border:1px solid var(--line); border-radius:6px;
+         background:var(--panel); }
+  .row h3 { margin:0 0 .15rem; font-size:.95rem; font-weight:600; }
+  .row h3 a { text-decoration:none; }
+  .row h3 a:hover { text-decoration:underline; }
+  .row .url { color:var(--muted); font-size:.75rem; word-break:break-all; }
+  .row .desc { color:var(--muted); font-size:.85rem; margin-top:.2rem; }
+  .tags { display:flex; gap:.3rem; flex-wrap:wrap; margin-top:.35rem; }
+  .tag { font-size:.68rem; padding:.08rem .45rem; border-radius:999px;
+         background:#21262d; border:1px solid var(--line); color:var(--muted); }
+
+  /* ---- grid view ---- */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,var(--card-w));
+          gap:.75rem; align-content:start; }
+  .card { border:1px solid var(--line); border-radius:8px; overflow:hidden;
+          background:var(--panel); display:flex; flex-direction:column; height:var(--card-h); }
+  .card .frame { height:190px; background:#010409; border-bottom:1px solid var(--line);
+                 position:relative; flex:0 0 auto; }
+  .card .frame iframe { width:100%; height:100%; border:0; display:block; }
+  .card .frame .fallback { position:absolute; inset:0; display:none; align-items:center;
+                 justify-content:center; color:var(--muted); font-size:.8rem; text-align:center; padding:1rem; }
+  .card .meta { margin:0; padding:.5rem .6rem; display:flex; flex-direction:column; gap:.2rem;
+                overflow:hidden; }
+  .card .title { font-size:.85rem; font-weight:600; color:var(--fg); text-decoration:none;
+                 display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .card .title:hover { color:var(--accent); }
+  .card .u { font-size:.7rem; color:var(--muted); word-break:break-all;
+             display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+  .card .tags { margin-top:auto; }
+  .sentinel { height:1px; }
+  .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <h1>ghindex</h1>
+    <span class="sub" id="count">index of GitHub Pages sites</span>
+  </div>
+  <form role="search" id="f" class="controls">
+    <label class="sr" for="q">Search owner, repo, title, or tag</label>
+    <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Search owner, repo, title or tag…" />
+    <button type="button" id="view" aria-pressed="false">Grid view</button>
+    <label class="sr" for="stars">Minimum stars</label>
+    <select id="stars">
+      <option value="0">Any stars</option>
+      <option value="1">1+</option>
+      <option value="10">10+</option>
+      <option value="50">50+</option>
+      <option value="200">200+</option>
+    </select>
+  </form>
+  <div class="cats" id="cats" role="group" aria-label="Browse by category"></div>
+  <div class="facets" id="facets" role="group" aria-label="Filter by topic"></div>
+</header>
+
+<main>
+  <!-- Shown when JS is unavailable or the worker fails; hidden once the app boots. -->
+  <noscript>
+    <p class="meta">
+      This search index needs JavaScript. Without it you can still browse the raw
+      shards directly, for example
+      <a href="./data/manifest.json">manifest.json</a> and
+      <a href="./data/a.json">a.json</a> … <a href="./data/z.json">z.json</a>
+      (sharded by the first letter of the owner).
+    </p>
+  </noscript>
+  <div class="meta" id="meta" role="status" aria-live="polite">Loading index…</div>
+  <div id="results" class="list"></div>
+  <div class="sentinel" id="sentinel"></div>
+</main>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
