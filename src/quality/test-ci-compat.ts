@@ -60,5 +60,35 @@ for (const wf of [".github/workflows/ci.yml", ".github/workflows/refresh-index.y
   check(`${wf} has no bare 'sleep 3'`, !/^\s*sleep 3\s*$/m.test(yml));
 }
 
+console.log("=== 7. every workflow installs bun via the action, not a shell installer ===");
+// The shell installer appends ~/.bun/bin to ~/.bash_profile, which
+// non-interactive Actions steps never source, so `bun` stayed "command not
+// found" and the deploy workflow failed. Every workflow must use setup-bun.
+// Comments are stripped first: the fix is documented in a comment that mentions
+// the very paths this check forbids, which is not an actual PATH hack.
+const stripYamlComments = (s: string) =>
+  s
+    .split("\n")
+    .map((l) => (/^\s*#/.test(l) ? "" : l))
+    .join("\n");
+
+for (const wf of [".github/workflows/ci.yml", ".github/workflows/refresh-index.yml", ".github/workflows/deploy-pages.yml"]) {
+  const raw = await Bun.file(wf).text();
+  const yml = stripYamlComments(raw);
+  check(`${wf} uses oven-sh/setup-bun`, yml.includes("oven-sh/setup-bun"));
+  check(`${wf} has no bun.sh/install fallback`, !/bun\.sh\/install/.test(yml));
+  check(`${wf} has no PATH hack for bun`, !/BUN_INSTALL|\.bun\/bin/.test(yml));
+}
+
+console.log("=== 8. deploy workflow uploads the site dir and needs the Pages env ===");
+{
+  const yml = await Bun.file(".github/workflows/deploy-pages.yml").text();
+  check("uploads src/site", /path:\s*src\/site/.test(yml));
+  check("uses the github-pages environment", /environment:[\s\S]{0,80}github-pages/.test(yml));
+  check("requests pages:write and id-token:write", /pages:\s*write/.test(yml) && /id-token:\s*write/.test(yml));
+  check("verifies pages before deploying", /test-pages\.ts/.test(yml));
+  check("does not cancel an in-flight deploy", /cancel-in-progress:\s*false/.test(yml));
+}
+
 console.log(`\n${fail === 0 ? "CI COMPATIBILITY OK" : `${fail} CHECK(S) FAILED`}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -33,15 +33,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Use the same setup action as ci.yml. The shell installer was tried here
+      # and broke: it writes ~/.bun/bin to ~/.bash_profile, which non-interactive
+      # GitHub Actions steps never source, so `bun` stayed "command not found".
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v5
 
       # The whole site is committed, so a plain upload of src/site is enough.
       # A stale index would be a real problem, so verify before publishing.
-      - name: Verify the committed index is current
+      - name: Verify the committed site is current
         run: |
-          bun --version 2>/dev/null || (curl -fsSL https://bun.sh/install | bash)
+          set -euo pipefail
+          bun --version
           bun run src/publish/test-pages.ts
           bun run src/quality/health.ts --max-age-hours 336
 
