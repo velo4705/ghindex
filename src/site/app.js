@@ -16,6 +16,55 @@ const $ = (id) => document.getElementById(id);
 const DATA = "./data/";
 const PAGE = 60; // rows rendered per page; sentinel appends more
 
+/**
+ * Report/submit links, built as pre-filled GitHub issue URLs. The site is
+ * static with no backend, so this is the only submission mechanism that needs
+ * no server and no third-party form service. Configured via REPORT_REPO at
+ * build time and read from data/reports.json at runtime.
+ */
+let reportRepo = "velo4705/ghindex";
+
+function issueUrl(title, body, labels) {
+  const p = new URLSearchParams({ title, body });
+  if (labels) p.set("labels", labels);
+  return `https://github.com/${reportRepo}/issues/new?${p.toString()}`;
+}
+
+function reportBrokenUrl(siteUrl) {
+  return issueUrl(
+    `Dead or incorrect: ${siteUrl}`,
+    [
+      "## Report: problem with an indexed site",
+      "",
+      `- **Site:** ${siteUrl}`,
+      "- **Observed:** (dead / 404 / wrong content / miscategorised)",
+      "",
+      "The nightly job re-probes reported sites on the next run. If the site is",
+      "dead it moves through the backoff schedule and is eventually unpublished.",
+    ].join("\n"),
+    "report",
+  );
+}
+
+function submitSiteUrl(siteUrl, owner) {
+  return issueUrl(
+    `Submit: ${siteUrl}`,
+    [
+      "## Submit a site",
+      "",
+      `- **Site:** ${siteUrl}`,
+      `- **Owner:** @${owner}`,
+      "",
+      "### Details",
+      "",
+      "- What is it?",
+      "- Which category does it belong in?",
+      "- Is it your site, and do you want it listed?",
+    ].join("\n"),
+    "submission",
+  );
+}
+
 const state = {
   manifest: null,
   rows: [],
@@ -182,6 +231,10 @@ function rowHtml(r) {
     <div class="url">${esc(href)}</div>
     ${r.d ? `<div class="desc">${esc(r.d)}</div>` : ""}
     <div class="tags">${tagsHtml(r)}</div>
+    <div class="row-actions">
+      <a href="${esc(reportBrokenUrl(href))}" target="_blank" rel="noopener noreferrer">Report problem</a>
+      <a href="${esc(submitSiteUrl(href, r.o))}" target="_blank" rel="noopener noreferrer">Claim / submit</a>
+    </div>
   </article>`;
 }
 
@@ -290,8 +343,15 @@ try {
   if (!res.ok) throw new Error(`manifest ${res.status}`);
   state.manifest = await res.json();
   for (const c of state.manifest.categories ?? []) state.catLabels[c.id] = c.label;
+
+  // Report links are optional: a missing config must not break search.
+  fetch(`${DATA}reports.json`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((cfg) => { if (cfg?.repo) reportRepo = cfg.repo; })
+    .catch(() => {});
+
   worker.postMessage({ type: "init", manifest: state.manifest });
   runSearch();
 } catch (err) {
-  $("meta").textContent = `Could not load index: ${err.message}. Run 'bun run src/publish/build.ts'.`;
+  $("meta").textContent = `Could not load index: ${err.message}. Run 'bun run build'.`;
 }

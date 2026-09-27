@@ -40,6 +40,13 @@ jobs:
       - name: Search correctness
         run: bun run src/publish/test-search.ts
 
+      - name: Generate static pages, then verify them
+        run: |
+          bun run build
+          bun run pages
+          bun run reports
+          bun run test:pages
+
       - name: Index health
         run: bun run src/quality/health.ts --max-age-hours 168
 
@@ -77,10 +84,14 @@ jobs:
       - name: Verify the build is reproducible (idempotent)
         run: |
           bun run src/publish/test-idempotent.ts
-          bun run src/publish/build.ts
-          if [ -n "$(git status --porcelain src/site/data)" ]; then
-            echo "::error::src/site/data is stale — run 'bun run src/publish/build.ts' and commit the result"
-            git status --porcelain src/site/data
+          bun run build
+          # Generated pages must also be committed and current, otherwise a
+          # merged change can ship a stale sitemap that references dead pages.
+          bun run pages
+          bun run reports
+          if [ -n "$(git status --porcelain src/site)" ]; then
+            echo "::error::src/site is stale — run 'bun run publish' and commit the result"
+            git status --porcelain src/site | head -20
             exit 1
           fi
-          echo "src/site/data matches the corpus"
+          echo "src/site matches the corpus"

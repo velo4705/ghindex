@@ -63,6 +63,46 @@ async function main() {
   }
   console.log(`[browser] using ${browser}`);
 
+  // Start the dev server ourselves unless one is already running, so this
+  // check is self-contained. Previously it assumed an externally started
+  // server and failed confusingly when run via `bun run test:all`.
+  let server: ReturnType<typeof Bun.spawn> | null = null;
+  if (!(await isUp(BASE))) {
+    server = Bun.spawn(["bun", "run", "serve.ts"], { stdout: "ignore", stderr: "ignore" });
+    let ready = false;
+    for (let i = 0; i < 30; i++) {
+      await Bun.sleep(1000);
+      if (await isUp(BASE)) { ready = true; break; }
+    }
+    if (!ready) {
+      server.kill();
+      console.error(`Dev server never came up at ${BASE}`);
+      process.exit(1);
+    }
+    console.log("[browser] started dev server");
+  } else {
+    console.log("[browser] using already-running server");
+  }
+
+  try {
+    await runChecks(browser);
+  } finally {
+    server?.kill();
+  }
+}
+
+async function isUp(base: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/data/manifest.json`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function runChecks(browser: string) {
   const userDataDir = mkdtempSync(join(tmpdir(), "ghindex-browser-"));
   const proc = Bun.spawn(
     [
@@ -217,6 +257,26 @@ async function main() {
 
   await evalJs(`(() => { document.querySelectorAll('.cat[aria-pressed=true]').forEach(c=>c.click()); return 1; })()`);
   await Bun.sleep(1000);
+
+  // M7: report / claim links. These live in ROW view, so they must be checked
+  // BEFORE switching to grid -- in grid the .row elements do not exist, and
+  // these checks silently query nothing. (An earlier version of this test ran
+  // them after the toggle and reported 4 false failures.)
+  const reportLink = await evalJs(`
+    (() => { const a = document.querySelector('.row-actions a');
+      return a ? a.href : ''; })()`);
+  check("report link present on results",
+    reportLink.includes("github.com") && reportLink.includes("/issues/new"),
+    reportLink.slice(0, 68) + "...");
+  const reportLabel = await evalJs(`
+    (() => { const a = document.querySelector('.row-actions a'); return a ? a.textContent : ''; })()`);
+  check("report link is labelled", /report/i.test(reportLabel), reportLabel);
+  const claimCount = await evalJs(`document.querySelectorAll('.row-actions a').length`);
+  check("claim/submit link present", claimCount >= 2, `${claimCount} action links`);
+  const noopener = await evalJs(`
+    (() => { const a = document.querySelector('.row-actions a');
+      return a ? (a.rel.includes('noopener') && a.target === '_blank') : false; })()`);
+  check("report links open safely", noopener === true);
 
   // Switch to grid view.
   await evalJs(`document.getElementById('view').click()`);

@@ -9,15 +9,19 @@
     "probe": "bun run src/index/probe.ts",
     "repair": "bun run src/index/repair.ts",
     "build": "bun run src/publish/build.ts",
+    "pages": "bun run src/publish/pages.ts",
+    "reports": "bun run src/publish/reports.ts",
+    "publish": "bun run build && bun run pages && bun run reports",
     "classify": "bun run src/classify/check.ts",
     "health": "bun run src/quality/health.ts",
     "perf": "bun run src/quality/perf-budget.ts",
     "anomaly": "bun run src/quality/anomaly.ts",
     "test": "bun run src/index/test-urls.ts && bun run src/classify/test.ts && bun run src/publish/test-search.ts",
+    "test:pages": "bun run src/publish/test-pages.ts",
     "test:browser": "bun run src/quality/verify-browser.ts",
     "test:anomaly": "bun run src/quality/test-anomaly.ts",
     "test:ci-compat": "bun run src/quality/test-ci-compat.ts",
     "test:idempotent": "bun run src/publish/test-idempotent.ts",
-    "test:all": "bun run test && bun run test:anomaly && bun run test:ci-compat && bun run test:idempotent && bun run health && bun run perf && bun run test:browser"
+    "test:all": "bun run test && bun run test:anomaly && bun run test:ci-compat && bun run test:idempotent && bun run test:pages && bun run health && bun run perf && bun run test:browser"
   }
 }

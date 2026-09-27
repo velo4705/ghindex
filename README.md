@@ -37,7 +37,7 @@ tombstoned. Tombstoned records are retained but never published.
 | `src/discover/` | Harvests Pages-enabled repos from the GitHub API. Resumable. |
 | `src/index/` | Record model, dead-link state machine, link checker, URL resolution. |
 | `src/classify/` | Derives browse categories from raw topics. |
-| `src/publish/` | Packs the corpus into sharded JSON plus a manifest. |
+| `src/publish/` | Packs the corpus into sharded JSON, generates static pages. |
 | `src/quality/` | Tests, index health, performance budget, anomaly detection. |
 | `src/site/` | The static site. This is what Pages deploys. |
 | `spike/` | The original feasibility investigation, kept for provenance. |
@@ -51,9 +51,28 @@ bun run serve          # dev server on :8099
 bun run harvest        # discover new repos (respects a time budget)
 bun run probe          # check liveness of records that are due
 bun run build          # corpus -> sharded JSON in src/site/data
+bun run publish        # build + generate pages + report links
 bun run test           # unit + data tests
-bun run test:all       # everything, including browser and budget checks
+bun run test:all       # everything, including browser, budget, and page checks
 ```
+
+`bun run test:browser` starts its own dev server, so it works standalone.
+
+## Reporting and submissions
+
+The site is static, so there is no backend to receive submissions. Rather than
+depend on a third-party form service, "Report problem" and "Claim / submit" on
+each result open a pre-filled GitHub issue. Every report lands in the repository
+as a reviewable issue, and the nightly job re-probes reported sites on its next
+run. Point reports at your own fork with `REPORT_REPO=owner/repo`.
+
+## Generated pages
+
+The app renders client-side, so a crawler would see an empty page. Each site
+with a usable title also gets a real static page under `sites/`, plus category
+landing pages, `sitemap.xml`, `robots.txt`, and a `404.html`. Text scraped from
+third-party pages is escaped, and mojibake is rejected — but non-Latin scripts
+are kept, because a Chinese or Arabic title is content, not corruption.
 
 ## Guarantees enforced in CI
 
@@ -64,4 +83,8 @@ bun run test:all       # everything, including browser and budget checks
 - **Integrity** — no duplicate, invalid, or dead URLs may be published.
 - **Size** — a gzip budget on the critical path, the largest shard, and
   bytes-per-record, so an unbounded field cannot be added quietly.
+- **Reproducibility** — a rebuild must produce no diff, including the manifest
+  and generated pages.
+- **Page quality** — generated pages must have titles, descriptions, canonical
+  links, and no mojibake.
 - **Behaviour** — the UI is driven in a real headless browser.

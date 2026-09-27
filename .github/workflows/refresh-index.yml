@@ -54,7 +54,17 @@ jobs:
         run: bun run src/classify/test.ts
 
       - name: Build static index
-        run: bun run src/publish/build.ts
+        run: bun run build
+
+      # Generated pages must be regenerated in the same run, or the sitemap
+      # keeps pointing at sites that were just removed as dead.
+      - name: Regenerate static pages and report links
+        run: |
+          bun run pages
+          bun run reports
+
+      - name: Verify generated pages
+        run: bun run test:pages
 
       - name: Verify search correctness against published shards
         run: bun run src/publish/test-search.ts
@@ -91,7 +101,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/site/data src/index/data
+          git add src/site src/index/data
           if git diff --staged --quiet; then
             echo "index unchanged - nothing to commit"
             exit 0
