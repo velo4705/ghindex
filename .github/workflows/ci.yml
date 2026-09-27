@@ -40,6 +40,9 @@ jobs:
       - name: Search correctness
         run: bun run src/publish/test-search.ts
 
+      - name: On-demand GitHub search
+        run: bun run src/publish/test-wide-search.ts
+
       - name: Generate static pages, then verify them
         run: |
           bun run build

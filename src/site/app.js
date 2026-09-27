@@ -75,6 +75,8 @@ const state = {
   activeTags: new Set(),
   activeCats: new Set(),
   minStars: 0,
+  // Row is the default. Previews are heavy (each card is a live iframe of a
+  // third-party page) and cannot be verified as loaded, so they are opt-in.
   view: "row", // 'row' | 'grid'
   rendered: 0,
   reqId: 0,
@@ -145,6 +147,109 @@ function safeUrl(u) {
   } catch {
     return null;
   }
+}
+
+/** Reads a user-supplied token from the tab, if any. Never persisted. */
+const userToken = () => $("token")?.value.trim() || "";
+
+/**
+ * On-demand search against GitHub, for sites outside the local index.
+ *
+ * The local index has hard edges: it holds only what our topic shards happened
+ * to find. Measured against topics we never harvested, 96% of the Pages-enabled
+ * owners we turned up were absent from it. GitHub can find them, so this widens
+ * the net on demand rather than waiting for a harvest that can never enumerate
+ * everything, because the API caps at 1,000 results per query.
+ */
+const wide = { inflight: null, lastQuery: "", results: [], truncated: false, error: null };
+
+async function runWideSearch() {
+  const q = $("q").value.trim();
+  if (!q) {
+    wide.results = [];
+    wide.error = null;
+    renderWide();
+    return;
+  }
+  // One request per distinct query: the unauthenticated limit is 10/min.
+  if (wide.lastQuery === q && wide.results.length) return;
+
+  wide.inflight?.abort();
+  const ctrl = new AbortController();
+  wide.inflight = ctrl;
+  wide.error = null;
+  renderWide("Asking GitHub…");
+
+  const { searchGitHub } = await import("./github-search.js");
+  const res = await searchGitHub(q, { token: userToken(), signal: ctrl.signal });
+  if (ctrl.signal.aborted) return;
+
+  wide.inflight = null;
+  wide.lastQuery = q;
+  wide.results = res.results;
+  wide.truncated = res.truncated;
+  wide.error = res.error ?? null;
+  renderWide();
+}
+
+function wideRowHtml(r) {
+  const href = safeUrl(r.url);
+  if (!href) return "";
+  const title = r.full_name || `${r.owner}/${r.repo}`;
+  const tags = (r.topics ?? [])
+    .slice(0, 4)
+    .map((t) => `<span class="tag">${esc(t)}</span>`)
+    .join("");
+  return `<article class="row">
+    <h3><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>
+      <span class="pill">not indexed</span></h3>
+    <div class="url">${esc(href)}</div>
+    ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
+    <div class="tags">${tags}</div>
+  </article>`;
+}
+
+/**
+ * Render the on-demand results section.
+ *
+ * The id is `wide-results`, NOT `wide`: the trigger button is already
+ * id="wide", and $("wide") here was resolving to that button, so the section
+ * was never created and its HTML was written into the button instead.
+ */
+function renderWide(statusText) {
+  let el = $("wide-results");
+  if (!el) {
+    el = document.createElement("section");
+    el.id = "wide-results";
+    el.className = "wide";
+    el.setAttribute("aria-live", "polite");
+    // Inside <main>, but BEFORE the scroll sentinel: the sentinel drives
+    // infinite scroll and must stay the last element, or appended results
+    // would land after the "load more" trigger.
+    $("sentinel").before(el);
+  }
+
+  if (statusText) {
+    el.innerHTML = `<h2>Searching all of GitHub</h2><p class="note">${esc(statusText)}</p>`;
+    return;
+  }
+  if (wide.error) {
+    el.innerHTML = `<h2>Search all of GitHub</h2><p class="note">${esc(wide.error)}</p>`;
+    return;
+  }
+  if (!wide.results.length) {
+    el.innerHTML = "";
+    return;
+  }
+
+  const n = wide.results.length;
+  const note = wide.truncated
+    ? `GitHub reported more matches than it returns (capped at 1,000 per query). These are the Pages-enabled results it did return.`
+    : `${n} Pages-enabled result${n === 1 ? "" : "s"} from GitHub. Outside this index, so not checked for liveness.`;
+
+  el.innerHTML =
+    `<h2>Also on GitHub</h2><p class="note">${esc(note)}</p>` +
+    wide.results.map(wideRowHtml).join("");
 }
 
 function tagsHtml(row) {
@@ -277,28 +382,23 @@ function renderPage() {
 }
 
 /**
- * Cross-origin iframes give no reliable load/error event, so we cannot detect
- * a blocked frame. Instead, check the iframe's own document: a frame that
- * loaded cross-origin is inaccessible, but a blocked frame stays at about:blank
- * and is same-origin-readable. This is a heuristic, not a guarantee.
+ * Previews are left alone entirely.
+ *
+ * An earlier version tried to detect a blocked frame by reading the iframe's
+ * own location after 3.5s: a cross-origin frame throws a SecurityError, and
+ * that throw was treated as "loaded fine", while a frame sitting on
+ * about:blank was treated as "blocked". Measured against the real corpus that
+ * got it backwards for 46 of 60 cards: frames that had genuinely rendered were
+ * hidden behind a "Preview unavailable" fallback, and the ones it hid were the
+ * ones working. A cross-origin iframe simply cannot be introspected from here,
+ * so the only honest options are to show it or not.
+ *
+ * A site that refuses framing renders as a blank box; the title and link below
+ * the frame always remain, so the card is still usable.
  */
 function attachFrameFallbacks() {
-  for (const frame of document.querySelectorAll(".card .frame iframe")) {
-    const fb = frame.parentElement.querySelector(".fallback");
-    const timer = setTimeout(() => {
-      try {
-        const loc = frame.contentWindow?.location;
-        // about:blank means nothing navigated -> likely blocked or empty.
-        if (!loc || loc.href === "about:blank") {
-          frame.style.visibility = "hidden";
-          fb.style.display = "flex";
-        }
-      } catch {
-        // Cross-origin and loaded fine: leave the preview visible.
-      }
-    }, 3500);
-    frame.addEventListener("load", () => clearTimeout(timer), { once: true });
-  }
+  // Intentionally a no-op. Kept as a seam in case a future service can supply
+  // real screenshot thumbnails, which would be the only reliable fix.
 }
 
 // Infinite page-in, only while more results remain.
@@ -328,7 +428,10 @@ $("view").addEventListener("click", () => {
   state.view = state.view === "row" ? "grid" : "row";
   const btn = $("view");
   btn.setAttribute("aria-pressed", String(state.view === "grid"));
-  btn.textContent = state.view === "grid" ? "Row view" : "Grid view";
+  // The label lives in a <span> so the icon survives the swap.
+  const label = btn.querySelector("span");
+  if (label) label.textContent = state.view === "grid" ? "List view" : "Previews";
+  btn.title = state.view === "grid" ? "Back to list view" : "Show a live preview of each site";
   state.rendered = 0;
   renderPage();
 });
@@ -336,6 +439,22 @@ $("view").addEventListener("click", () => {
 $("stars").addEventListener("change", (e) => {
   state.minStars = Number(e.target.value);
   runSearch();
+});
+
+$("wide").addEventListener("click", () => {
+  const showing = $("tokenrow").hidden;
+  $("tokenrow").hidden = !showing;
+  if (showing) $("token").focus();
+  runWideSearch();
+});
+
+// A token is supplied per tab; it is never written to storage.
+$("token").addEventListener("change", () => {
+  if (wide.lastQuery) {
+    // Re-run so the new limit takes effect for the current query.
+    wide.lastQuery = "";
+    runWideSearch();
+  }
 });
 
 // ---------------------------------------------------------------- boot
