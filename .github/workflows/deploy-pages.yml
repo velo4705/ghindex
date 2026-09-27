@@ -1,0 +1,55 @@
+name: deploy pages
+
+# Deploys src/site to GitHub Pages.
+#
+# The site is fully static, so this uses the official Pages artifact upload
+# rather than pushing to a gh-pages branch. Requires the repository setting
+# "GitHub Actions" as the Pages source, and permissions to deploy.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/site/**"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once, and never cancel one mid-upload: a cancelled
+# deploy can leave the live site pointing at a half-published state.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      # The whole site is committed, so a plain upload of src/site is enough.
+      # A stale index would be a real problem, so verify before publishing.
+      - name: Verify the committed index is current
+        run: |
+          bun --version 2>/dev/null || (curl -fsSL https://bun.sh/install | bash)
+          bun run src/publish/test-pages.ts
+          bun run src/quality/health.ts --max-age-hours 336
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: src/site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
