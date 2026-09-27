@@ -1,24 +1,82 @@
 /**
- * M3 browser verification.
+ * Browser verification.
  *
- * Static existence checks proved nothing about the UI. This drives real Edge
- * via the DevTools Protocol: loads the page, waits for the worker to return
- * results, exercises the tag facet, and fails on any console error.
+ * Static existence checks proved nothing about the UI, so this drives a real
+ * Chromium-family browser over the DevTools Protocol: loads the page, waits for
+ * the worker to return results, exercises search and both facet types, and
+ * fails on any console error.
+ *
+ * Must run on Linux CI as well as Windows/macOS, so the browser is discovered
+ * at runtime rather than hardcoded.
  */
 
-const EDGE = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
-const PORT = 9222;
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const PORT = Number(process.env.CDP_PORT ?? 9222);
 const BASE = process.env.BASE ?? "http://localhost:8099";
 
+/** First existing candidate wins. Order puts stable channels first. */
+function findBrowser(): string | null {
+  const candidates: string[] = [];
+  const env = process.env.CHROME_PATH ?? process.env.BROWSER_PATH;
+  if (env) candidates.push(env);
+
+  if (process.platform === "win32") {
+    candidates.push(
+      "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+      "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+      "C:/Program Files/Google/Chrome/Application/chrome.exe",
+      "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    );
+  } else if (process.platform === "darwin") {
+    candidates.push(
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    );
+  } else {
+    candidates.push(
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser",
+      "/snap/bin/chromium",
+      "/usr/bin/microsoft-edge",
+    );
+  }
+
+  for (const c of candidates) if (existsSync(c)) return c;
+  return null;
+}
+
 async function main() {
+  const browser = findBrowser();
+  if (!browser) {
+    // A missing browser must not silently pass: that would hide a broken UI.
+    console.error(
+      "No Chromium browser found. Install Chrome/Chromium, or set CHROME_PATH.\n" +
+        `  platform: ${process.platform}\n  looked in: (see src/quality/verify-browser.ts)`,
+    );
+    process.exit(1);
+  }
+  console.log(`[browser] using ${browser}`);
+
+  const userDataDir = mkdtempSync(join(tmpdir(), "ghindex-browser-"));
   const proc = Bun.spawn(
     [
-      EDGE,
+      browser,
       "--headless=new",
       `--remote-debugging-port=${PORT}`,
       "--disable-gpu",
+      // Required in containers/CI, where there is no sandbox setup and no
+      // writable HOME for Chrome's default profile.
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
       "--no-first-run",
-      "--user-data-dir=" + (await import("node:fs")).mkdtempSync("C:/Users/JOVIAN~1/AppData/Local/Temp/opencode/edge-"),
+      "--disable-extensions",
+      `--user-data-dir=${userDataDir}`,
       "about:blank",
     ],
     { stdout: "ignore", stderr: "ignore" },

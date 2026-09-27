@@ -49,13 +49,30 @@ jobs:
       - name: Anomaly detector self-test
         run: bun run src/quality/test-anomaly.ts
 
+      - name: CI compatibility self-test
+        run: bun run src/quality/test-ci-compat.ts
+
       - name: Browser verification
         run: |
+          # ubuntu-latest ships Chrome, but make it explicit so a runner image
+          # change cannot silently skip this gate.
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo "::error::no Chromium browser on the runner; cannot verify the UI"
+            exit 1
+          fi
+          echo "using $CHROME"
+          export CHROME_PATH="$CHROME"
+
           bun run serve.ts &
           SERVER=$!
-          sleep 3
-          bun run src/quality/verify-browser.ts || { kill $SERVER; exit 1; }
-          kill $SERVER
+          # Poll the server rather than sleeping a fixed amount.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/data/manifest.json > /dev/null; then break; fi
+            sleep 1
+          done
+          bun run src/quality/verify-browser.ts || { kill $SERVER 2>/dev/null; exit 1; }
+          kill $SERVER 2>/dev/null || true
 
       - name: Verify the build is reproducible (idempotent)
         run: |

@@ -72,11 +72,20 @@ jobs:
 
       - name: Verify the UI in a real browser
         run: |
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo "::error::no Chromium browser on the runner; cannot verify the UI"
+            exit 1
+          fi
+          export CHROME_PATH="$CHROME"
           bun run serve.ts &
           SERVER=$!
-          sleep 3
-          bun run src/quality/verify-browser.ts || { kill $SERVER; exit 1; }
-          kill $SERVER
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8099/data/manifest.json > /dev/null; then break; fi
+            sleep 1
+          done
+          bun run src/quality/verify-browser.ts || { kill $SERVER 2>/dev/null; exit 1; }
+          kill $SERVER 2>/dev/null || true
 
       - name: Commit changed shards
         run: |
