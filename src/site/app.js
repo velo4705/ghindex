@@ -101,7 +101,7 @@ worker.onerror = (e) => {
 worker.onmessage = (e) => {
   const m = e.data;
   if (m.type === "ready") {
-    $("count").textContent = `${m.total.toLocaleString()} live sites indexed`;
+    $("count").innerHTML = `<b>${m.total.toLocaleString()}</b> live sites indexed`;
     return;
   }
   if (m.type === "error") {
@@ -251,7 +251,7 @@ function cardHtml(r) {
       <div class="fallback">Preview unavailable —<br /><a href="${esc(href)}"
         target="_blank" rel="noopener noreferrer">open site</a></div>
     </div>
-    <div class="meta">
+    <div class="info">
       <a class="title" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(r.t ?? r.r)}</a>
       <div class="u">${esc(href)}</div>
       <div class="tags">${tagsHtml(r)}</div>
@@ -271,7 +271,9 @@ function renderPage() {
   if (state.view === "grid") attachFrameFallbacks();
 
   $("sentinel").hidden = state.rendered >= state.rows.length;
-  if (state.rendered === 0) el.innerHTML = `<p class="meta">No matches.</p>`;
+  if (state.rendered === 0) {
+    el.innerHTML = `<div class="empty">No matches. Try a shorter query or clear a filter.</div>`;
+  }
 }
 
 /**

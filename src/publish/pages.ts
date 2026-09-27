@@ -23,6 +23,7 @@
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { classify, CATEGORIES, CATEGORY_LABELS } from "../classify/taxonomy";
+import { decodeEntities } from "../index/core";
 import { PATHS } from "../paths";
 
 const SITE = PATHS.site;
@@ -59,7 +60,10 @@ const C1_CONTROL = /[\u0080-\u009F]/g;
 function cleanText(s: unknown, max = 300): string | null {
   if (typeof s !== "string") return null;
 
-  const out = s.replace(C1_CONTROL, " ").replace(/\s+/g, " ").trim();
+  // Decode BEFORE the mojibake check. An encoded entity such as "&eacute;"
+  // contains the U+00C2/U+00C3 lead-byte pattern only after it has been
+  // decoded, so checking first would reject legitimate names for no reason.
+  const out = decodeEntities(s).replace(C1_CONTROL, " ").replace(/\s+/g, " ").trim();
 
   // Reject only on the mojibake signature, never on non-ASCII density.
   MOJIBAKE_PAIR.lastIndex = 0;

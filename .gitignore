@@ -5,6 +5,9 @@ node_modules/
 # spike/, but the raw JSON dumps are large and regenerable.
 spike/data/
 
+# Local review screenshots, regenerable with `bun run m6/shots.ts`.
+m6/screenshots/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

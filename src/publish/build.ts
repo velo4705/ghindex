@@ -26,7 +26,7 @@ import { existsSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { PATHS } from "../paths";
 import { createHash } from "node:crypto";
 import { PATHS } from "../paths";
-import { isPublishable, type Record } from "../index/core";
+import { isPublishable, decodeEntities, type Record } from "../index/core";
 import { PATHS } from "../paths";
 import { classify, CATEGORIES, CATEGORY_LABELS } from "../classify/taxonomy";
 import { PATHS } from "../paths";
@@ -54,8 +54,10 @@ function pack(rec: Record): Packed {
     u: rec.url,
     o: rec.owner,
     r: rec.name,
-    t: rec.title,
-    d: rec.page_description ?? rec.description,
+    // Decoded here as well as at probe time: the description may come from the
+    // repo metadata rather than the page, and that path is not re-probed.
+    t: rec.title ? decodeEntities(rec.title) : null,
+    d: decodeEntities(rec.page_description ?? rec.description ?? "").trim() || null,
     g: rec.topics.slice(0, 6),
     // Categories are DERIVED from topics at build time, so a newly harvested
     // site classifies itself with no manual step.

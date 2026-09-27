@@ -7,7 +7,7 @@
  * permanent tests.
  */
 
-import { pagesUrlFor, isValidPagesUrl } from "./core";
+import { pagesUrlFor, isValidPagesUrl, decodeEntities } from "./core";
 
 let fail = 0;
 const eq = (name: string, got: string, want: string) => {
@@ -64,6 +64,31 @@ truthy("pages.github.io rejected", isValidPagesUrl("https://x.pages.github.io/")
 truthy("foreign domain rejected", isValidPagesUrl("http://jkunst.com/x/"), false);
 truthy("github.com rejected", isValidPagesUrl("https://github.com/a/b"), false);
 truthy("not a url rejected", isValidPagesUrl("nonsense"), false);
+
+console.log("=== HTML entity decoding (scraped metadata) ===");
+eq("hex entity", decodeEntities("The world&#x27;s best"), "The world's best");
+eq("decimal entity", decodeEntities("AT&#38;T and T&#38;T"), "AT&T and T&T");
+eq("named amp", decodeEntities("Senior Software &amp; Platform Engineer"),
+  "Senior Software & Platform Engineer");
+// &nbsp; decodes to a space, so "&nbsp;&ndash;&nbsp;" leaves doubled spaces;
+// decodeEntities collapses them, which is the intended behaviour.
+eq("named nbsp and ndash", decodeEntities("Neonote&nbsp;&ndash;&nbsp;A theme"),
+  "Neonote - A theme");
+eq("collapsed whitespace is stable",
+  decodeEntities(decodeEntities("Neonote&nbsp;&ndash;&nbsp;A theme")),
+  "Neonote - A theme");
+eq("named quot/lt/gt", decodeEntities("&lt;b&gt;bold&lt;/b&gt; &quot;quoted&quot;"), "<b>bold</b> \"quoted\"");
+eq("ellipsis and mdash", decodeEntities("a&hellip;b&mdash;c"), "a...b-c");
+eq("multiple in one string", decodeEntities("a &amp; b &amp; c"), "a & b & c");
+truthy("idempotent", decodeEntities(decodeEntities("x&#x27;y")) === "x'y", true);
+eq("text with no entities is unchanged", decodeEntities("plain text 123"), "plain text 123");
+
+// Must NOT be over-eager: a bare ampersand or unknown entity stays put.
+eq("bare ampersand preserved", decodeEntities("Tom & Jerry"), "Tom & Jerry");
+eq("unknown entity preserved", decodeEntities("&notrealentity;"), "&notrealentity;");
+// Control code points must not be smuggled in through an entity.
+eq("control codepoint refused", decodeEntities("a&#0;b"), "a&#0;b");
+eq("newline entity refused", decodeEntities("a&#10;b"), "a&#10;b");
 
 console.log(`\n${fail === 0 ? "ALL URL CHECKS PASSED" : `${fail} CHECK(S) FAILED`}`);
 process.exit(fail === 0 ? 0 : 1);

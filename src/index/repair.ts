@@ -12,8 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import { PATHS } from "../paths";
-import { isValidPagesUrl, pagesUrlFor } from "./core";
-import { PATHS } from "../paths";
+import { isValidPagesUrl, pagesUrlFor, decodeEntities } from "./core";
 
 const DB = PATHS.corpus;
 const db = JSON.parse(readFileSync(DB, "utf8")) as { records: Record<string, any> };
@@ -21,7 +20,9 @@ const db = JSON.parse(readFileSync(DB, "utf8")) as { records: Record<string, any
 let urlFixed = 0;
 let dropped = 0;
 let needsReprobe = 0;
+let entitiesFixed = 0;
 const examples: string[] = [];
+const entityExamples: string[] = [];
 
 for (const [key, rec] of Object.entries(db.records)) {
   const correct = pagesUrlFor(rec.owner, rec.name, rec.homepage);
@@ -43,6 +44,22 @@ for (const [key, rec] of Object.entries(db.records)) {
   if (!isValidPagesUrl(rec.url)) {
     delete db.records[key];
     dropped++;
+    continue;
+  }
+
+  // Scrape-sourced metadata can carry raw HTML entities, which render as
+  // literal "&#x27;" in the UI and in the generated <title>/<meta>.
+  for (const field of ["title", "page_description", "description"] as const) {
+    const before = rec[field];
+    if (typeof before !== "string" || !before.includes("&")) continue;
+    const after = decodeEntities(before);
+    if (after !== before) {
+      if (entityExamples.length < 5) {
+        entityExamples.push(`     ${before.slice(0, 60)}\n  ->  ${after.slice(0, 60)}`);
+      }
+      rec[field] = after;
+      entitiesFixed++;
+    }
   }
 }
 
@@ -52,6 +69,11 @@ console.log("=== corpus repair ===");
 console.log(`  URLs corrected:  ${urlFixed}`);
 console.log(`  records dropped: ${dropped} (unresolvable as a github.io site)`);
 console.log(`  reset to unknown: ${needsReprobe} (will be re-probed)`);
+console.log(`  entities decoded: ${entitiesFixed}`);
+if (entityExamples.length) {
+  console.log("\n  entity examples:");
+  for (const e of entityExamples) console.log(e);
+}
 if (examples.length) {
   console.log("\n  examples:");
   for (const e of examples) console.log(e);

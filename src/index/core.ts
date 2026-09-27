@@ -83,6 +83,53 @@ export function isValidPagesUrl(u: string): boolean {
   }
 }
 
+/**
+ * Decode HTML character references in text scraped from a page.
+ *
+ * Extracted text comes from raw HTML, so entities arrive encoded:
+ * "the world&#x27;s", "Foo &amp; Bar". A browser decodes these when it renders
+ * HTML, but this text is injected as strings and is also emitted verbatim into
+ * the <title> and <meta description> of the generated pages, where it shows up
+ * literally as "&#x27;". 3.1% of the corpus was affected before this existed.
+ *
+ * Deliberately conservative: a small named set plus numeric references. An
+ * unrecognised named entity is left exactly as-is rather than silently dropped,
+ * and control code points are refused so scraped text cannot smuggle them in.
+ */
+export function decodeEntities(s: string): string {
+  if (!s || !s.includes("&")) return s;
+  const NAMED: Record<string, string> = {
+    amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+    ndash: "-", mdash: "-", lsquo: "'", rsquo: "'",
+    ldquo: '"', rdquo: '"', hellip: "...", trade: "(tm)",
+    copy: "(c)", reg: "(r)", middot: "-", bull: "-",
+    deg: "-", times: "x", laquo: "<<", raquo: ">>",
+    // Latin-1 supplement, common in names and European copy.
+    eacute: "e", egrave: "e", agrave: "a", ccedil: "c", uuml: "u",
+    ouml: "o", auml: "a", szlig: "s", ntilde: "n", aring: "a",
+    oslash: "o", aacute: "a", iacute: "i", oacute: "o", uacute: "u",
+    shy: "", macr: "-", ordf: "a", ordm: "o", not: "!",
+    larr: "<-", rarr: "->", harr: "<->", beta: "b",
+  };
+  const out = s.replace(
+    /&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{1,10});/g,
+    (whole, body: string) => {
+      if (body[0] === "#") {
+        const code =
+          body[1] === "x" || body[1] === "X"
+            ? Number.parseInt(body.slice(2), 16)
+            : Number.parseInt(body.slice(1), 10);
+        if (!Number.isFinite(code) || code < 0x20 || code > 0x10ffff) return whole;
+        try { return String.fromCodePoint(code); } catch { return whole; }
+      }
+      return NAMED[body.toLowerCase()] ?? whole;
+    },
+  );
+  // &nbsp; decodes to a space, so entities can leave doubled spaces behind.
+  // Collapse here so every caller gets tidy text without repeating itself.
+  return out.replace(/\s+/g, " ");
+}
+
 const DAY = 86_400_000;
 
 /**

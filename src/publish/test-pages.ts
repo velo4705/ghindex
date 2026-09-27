@@ -108,6 +108,67 @@ for (const p of pages.slice(0, 400)) {
 }
 check("no script tags in generated pages", injected === 0, `${injected} found`);
 
+// --- 7b. no unescaped source entities in the served text ---
+// Scraped titles/descriptions arrive entity-encoded ("the world&#x27;s"). That
+// must be DECODED so a reader sees an apostrophe, not the escape sequence.
+//
+// Note this does not mean "the file contains no '&...;'": the generated HTML
+// is correctly attribute-escaped, so a decoded apostrophe is re-encoded as
+// "&#39;" on its way into <title>. That is valid HTML and renders as "'". The
+// real defect is an entity whose DECODED form is not what a reader should see,
+// so this test decodes the extracted text and then checks the result.
+const decode = (s: string) =>
+  s.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{1,10});/g, (whole, body: string) => {
+    if (body[0] === "#") {
+      const code = body[1] === "x" || body[1] === "X"
+        ? Number.parseInt(body.slice(2), 16)
+        : Number.parseInt(body.slice(1), 10);
+      if (!Number.isFinite(code) || code < 0x20 || code > 0x10ffff) return whole;
+      try { return String.fromCodePoint(code); } catch { return whole; }
+    }
+    const named: Record<string, string> = {
+      amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+      ndash: "-", mdash: "-", hellip: "...", larr: "<-", rarr: "->",
+      eacute: "e", beta: "b", shy: "", macr: "-",
+    };
+    return named[body.toLowerCase()] ?? whole;
+  });
+
+let doubleEncoded = 0;
+const samples: string[] = [];
+for (const p of pages) {
+  const t = await Bun.file(p).text();
+  const title = t.match(/<title>([^<]*)<\/title>/)?.[1] ?? "";
+  const desc = t.match(/<meta name="description" content="([^"]*)"/)?.[1] ?? "";
+  // After one decode, a correctly handled title is plain text. If decoding
+  // again still changes it, the source was double-encoded.
+  for (const field of [title, desc]) {
+    const once = decode(field);
+    const twice = decode(once);
+    if (once !== twice) {
+      doubleEncoded++;
+      if (samples.length < 3) samples.push(`"${field.slice(0, 60)}"`);
+    }
+  }
+}
+check("title/description are not double-encoded", doubleEncoded === 0,
+  doubleEncoded ? `${doubleEncoded} affected, e.g. ${samples[0]}` : "0 affected");
+
+// And a direct spot check on the real-world case. The generator escapes on
+// output, so a decoded apostrophe is written as "&#39;" and a browser renders
+// it as "'". The original bug produced "&amp;#x27;" (double-encoded), which
+// renders as the literal text "&#x27;".
+{
+  const raw = "Ant Design - The world&#39;s second most popular React UI framework - ghindex";
+  check("decoded apostrophe renders as an apostrophe",
+    decode(raw) === "Ant Design - The world's second most popular React UI framework - ghindex",
+    decode(raw));
+  // The failure mode we are guarding against: escaped again after decoding.
+  const doubleEncoded = "Ant Design - The world&amp;#x27;s second most popular";
+  check("double-encoding is detectable", decode(decode(doubleEncoded)) !== decode(doubleEncoded),
+    `detects "${doubleEncoded}"`);
+}
+
 // --- 8. generated companions in data/ must survive a rebuild ---
 // build.ts deletes files in the data dir that are not listed as shards. That
 // silently removed reports.json on every run, so the client's report links

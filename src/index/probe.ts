@@ -14,8 +14,7 @@
 
 import { readFileSync } from "node:fs";
 import { PATHS } from "../paths";
-import { classify, isDue, type Record } from "./core";
-import { PATHS } from "../paths";
+import { classify, isDue, decodeEntities, type Record } from "./core";
 
 const DB = PATHS.corpus;
 const UA =
@@ -26,13 +25,13 @@ const TIMEOUT_MS = 15_000;
 const titleOf = (h: string) => {
   const m = h.match(/<title[^>]*>([\s\S]{1,300}?)<\/title>/i);
   if (!m) return null;
-  const t = m[1].replace(/\s+/g, " ").trim();
+  const t = decodeEntities(m[1]).replace(/\s+/g, " ").trim();
   return t.length ? t : null;
 };
 const descOf = (h: string) => {
   const tag = h.match(/<meta[^>]+name\s*=\s*["']?description["']?[^>]*>/i)?.[0];
   const c = tag?.match(/content\s*=\s*["']([^"']{1,500})["']/i)?.[1];
-  return c && c.trim().length ? c.trim() : null;
+  return c && c.trim().length ? decodeEntities(c).trim() : null;
 };
 
 /** Only non-permissive X-Frame-Options / CSP frame-ancestors actually block. */
