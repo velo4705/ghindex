@@ -1,0 +1,9 @@
+{
+  "repo": "velo4705/ghindex",
+  "broken": {
+    "labels": "report"
+  },
+  "submit": {
+    "labels": "submission"
+  }
+}
