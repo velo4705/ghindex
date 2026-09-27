@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# M0 spike artifacts: the feasibility investigation. Kept for provenance in
+# spike/, but the raw JSON dumps are large and regenerable.
+spike/data/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local env
+.env
+.env.local

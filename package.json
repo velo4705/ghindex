@@ -1,0 +1,21 @@
+{
+  "name": "ghindex",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "bun run serve.ts",
+    "harvest": "bun run src/discover/harvest.ts",
+    "harvest:stats": "bun run src/discover/harvest.ts --stats",
+    "probe": "bun run src/index/probe.ts",
+    "repair": "bun run src/index/repair.ts",
+    "build": "bun run src/publish/build.ts",
+    "classify": "bun run src/classify/check.ts",
+    "health": "bun run src/quality/health.ts",
+    "perf": "bun run src/quality/perf-budget.ts",
+    "anomaly": "bun run src/quality/anomaly.ts",
+    "test": "bun run src/index/test-urls.ts && bun run src/classify/test.ts && bun run src/publish/test-search.ts",
+    "test:browser": "bun run src/quality/verify-browser.ts",
+    "test:anomaly": "bun run src/quality/test-anomaly.ts",
+    "test:all": "bun run test && bun run test:anomaly && bun run health && bun run perf && bun run test:browser"
+  }
+}

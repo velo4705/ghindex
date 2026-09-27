@@ -1,0 +1,68 @@
+name: ci
+
+# Fast feedback on pull requests. The nightly refresh-index workflow is the
+# thing that actually updates the data; this one exists so a bad classifier
+# change or a bloated payload is caught BEFORE it reaches the default branch,
+# not a day later.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # No GITHUB_TOKEN here: these are pure checks against committed data, so
+      # CI must not spend API rate limit on a PR.
+
+      - name: URL resolution
+        run: bun run src/index/test-urls.ts
+
+      - name: Category classifier
+        run: bun run src/classify/test.ts
+
+      - name: Search correctness
+        run: bun run src/publish/test-search.ts
+
+      - name: Index health
+        run: bun run src/quality/health.ts --max-age-hours 168
+
+      - name: Performance budget
+        run: bun run src/quality/perf-budget.ts
+
+      - name: Anomaly detector self-test
+        run: bun run src/quality/test-anomaly.ts
+
+      - name: Browser verification
+        run: |
+          bun run serve.ts &
+          SERVER=$!
+          sleep 3
+          bun run src/quality/verify-browser.ts || { kill $SERVER; exit 1; }
+          kill $SERVER
+
+      - name: Verify the build is reproducible (idempotent)
+        run: |
+          bun run src/publish/build.ts
+          if [ -n "$(git status --porcelain src/site/data)" ]; then
+            echo "::error::src/site/data is stale — run 'bun run src/publish/build.ts' and commit the result"
+            git status --porcelain src/site/data
+            exit 1
+          fi
+          echo "src/site/data matches the corpus"
