@@ -62,15 +62,48 @@ if (typeof manifest.total !== "number" || manifest.total <= 0) err("manifest.tot
 if (manifest.schema !== 2) warn(`manifest schema is ${manifest.schema}, expected 2`);
 
 // ---- staleness ----
-const gen = manifest.generated_at ? Date.parse(manifest.generated_at) : NaN;
-if (Number.isNaN(gen)) {
-    err("manifest.generated_at is missing or unparseable - cannot detect staleness");
+/**
+ * Freshness is measured from the newest probe in the CORPUS, not from the
+ * manifest's `generated_at`.
+ *
+ * Those are not the same question, and conflating them made a healthy pipeline
+ * look broken. The build deliberately freezes `generated_at` on a no-op rebuild
+ * so the manifest stays byte-identical and git sees no diff (see
+ * test-idempotent.ts). That means `generated_at` answers "when did the content
+ * last change", which can legitimately be weeks ago on a stable index. Reading
+ * it as "when did we last check" reported a 72h-old healthy index as STALE and
+ * turned CI red for a run that had actually just succeeded.
+ *
+ * The question health should ask is whether the probe pipeline is still
+ * running, and only the corpus knows that: its newest `last_checked` moves on
+ * every successful sweep, whether or not any verdict changed.
+ */
+let freshestChecked = 0;
+if (existsSync(PATHS.corpus)) {
+  try {
+    const corpus = JSON.parse(readFileSync(PATHS.corpus, "utf8"));
+    for (const rec of Object.values<any>(corpus.records ?? {})) {
+      const t = rec?.last_checked ? Date.parse(rec.last_checked) : NaN;
+      if (!Number.isNaN(t) && t > freshestChecked) freshestChecked = t;
+    }
+  } catch (e) {
+    warn(`corpus could not be read for staleness: ${e}`);
+  }
+}
+
+if (freshestChecked === 0) {
+  err("no record in the corpus has been probed - cannot detect staleness");
 } else {
-  const ageH = (Date.now() - gen) / 3_600_000;
+  const ageH = (Date.now() - freshestChecked) / 3_600_000;
   if (ageH > MAX_AGE_H) {
-    err(`index is STALE: built ${ageH.toFixed(1)}h ago (limit ${MAX_AGE_H}h). The refresh job is probably failing.`);
+    err(`data is STALE: newest probe ${ageH.toFixed(1)}h ago (limit ${MAX_AGE_H}h). The refresh job is probably failing.`);
   } else {
-    ok(`index age ${ageH.toFixed(1)}h (limit ${MAX_AGE_H}h)`);
+    ok(`newest probe ${ageH.toFixed(1)}h ago (limit ${MAX_AGE_H}h)`);
+  }
+  // Reported for context only. Frozen on no-op rebuilds, by design.
+  const gen = manifest.generated_at ? Date.parse(manifest.generated_at) : NaN;
+  if (!Number.isNaN(gen)) {
+    ok(`index content last changed ${((Date.now() - gen) / 3_600_000).toFixed(1)}h ago`);
   }
 }
 
@@ -127,25 +160,69 @@ if (sum !== manifest.total) {
 if (countMismatch) warn(`${countMismatch} shard(s) had a count mismatch`);
 
 // ---- orphaned shards ----
+// Only files the build actually emits as shards should be checked for orphans.
+// reports.json is a report artifact, not an index shard, so treating it as an
+// orphan was a false alarm on every run.
 const { readdirSync } = await import("node:fs");
-  const onDisk = readdirSync(PATHS.data).filter((f) => f.endsWith(".json") && f !== "manifest.json");
+const NOT_SHARDS = new Set(["manifest.json", "reports.json"]);
+const onDisk = readdirSync(PATHS.data).filter(
+  (f) => f.endsWith(".json") && !NOT_SHARDS.has(f),
+);
 const listed = new Set(manifest.shards.map((s: any) => s.file));
 const orphans = onDisk.filter((f) => !listed.has(f));
 if (orphans.length === 0) ok("no orphaned shard files");
 else warn(`orphaned (unreferenced) shards: ${orphans.join(", ")}`);
 
-// ---- published set must be the alive set ----
+// ---- every published URL must be backed by a live record ----
 if (existsSync(PATHS.corpus)) {
   const db = readJson(PATHS.corpus) as {
     records: Record<string, any>;
   };
-  let nonAlive = 0;
+  const norm = (u: string) => u.replace(/\/+$/, "").toLowerCase();
+
+  // Index the corpus by normalised URL so we can ask which record actually
+  // backs each published URL.
+  const aliveBacking = new Set<string>();
+  const nonAliveAliases: string[] = [];
   for (const r of Object.values(db.records)) {
-    if (r.liveness === "alive" && !seenUrls.has(r.url)) continue; // fine
-    if (r.liveness !== "alive" && seenUrls.has(r.url)) nonAlive++;
+    if (!r.url) continue;
+    const key = norm(r.url);
+    if (r.liveness === "alive") aliveBacking.add(key);
+    else nonAliveAliases.push(`${r.full_name} (${r.liveness}) -> ${r.url}`);
   }
-  if (nonAlive === 0) ok("no dead/uncategorised records leaked into the published index");
-  else err(`${nonAlive} non-alive records are published - dead links are being served`);
+
+  // A dead link is served only when the PUBLISHED URL has no live record
+  // behind it. The build dedupes by URL across publishable (alive) records
+  // only, so a published URL is always backed by an alive record; the
+  // non-alive records that share it are unpublished aliases, not served rows.
+  //
+  // The previous version of this check flagged those aliases as leaked dead
+  // links, which was wrong: it asked "does a non-alive record point at this
+  // URL?" rather than "is the published copy of this URL live?". With
+  // tarrex/hugo-theme-online-resume alive and tarrex/online-resume flaky on
+  // the same URL it reported a dead link that was never served.
+  const unserved = [...seenUrls].filter((u) => !aliveBacking.has(norm(u)));
+  if (unserved.length === 0) {
+    ok(`every published URL (${seenUrls.size}) is backed by a live record`);
+  } else {
+    err(
+      `${unserved.length} published URL(s) have no live record behind them: ` +
+        unserved.slice(0, 3).join("; "),
+    );
+  }
+
+  // Alias collisions are data hygiene, not a serving bug: worth seeing, not
+  // worth failing CI over.
+  const aliasCollisions = nonAliveAliases.filter((s) => {
+    const url = s.slice(s.indexOf("-> ") + 3);
+    return seenUrls.has(norm(url));
+  });
+  if (aliasCollisions.length) {
+    warn(
+      `${aliasCollisions.length} non-alive repo(s) alias a published URL ` +
+        `(harmless; the live record is the one served): ${aliasCollisions.slice(0, 2).join("; ")}`,
+    );
+  }
 
   const neverProbed = [...seenUrls].filter((u) => {
     const rec = Object.values(db.records).find((r) => r.url === u);

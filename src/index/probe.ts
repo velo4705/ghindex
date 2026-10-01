@@ -19,7 +19,23 @@ import { classify, isDue, decodeEntities, type Record } from "./core";
 const DB = PATHS.corpus;
 const UA =
   "Mozilla/5.0 (compatible; ghindex-m1/0.1; +https://github.com/; site index)";
-const CONCURRENCY = 20;
+
+/**
+ * Concurrency for the HEAD/GET sweep.
+ *
+ * This is 20, deliberately, and it was briefly raised to 100 on the strength of
+ * a throughput benchmark. That was wrong: the benchmark measured how fast
+ * REQUESTS COMPLETE, not how many sites are correctly classified. At
+ * concurrency 100, GitHub Pages started refusing connections, 1,136 records
+ * came back as "flaky" with no HTTP status at all, and the alive count fell from
+ * 5,779 to 5,063. Re-checking a sample of those at low concurrency showed 8 of
+ * 10 were alive: the sweep had written false deaths into the corpus.
+ *
+ * Throughput that outruns the origin server buys nothing, because a site you
+ * cannot reach is a site you cannot publish. Correctness first: 20 is the
+ * highest concurrency measured to keep every record classifiable.
+ */
+const CONCURRENCY = Number(process.env.PROBE_CONCURRENCY ?? 20);
 const TIMEOUT_MS = 15_000;
 
 const titleOf = (h: string) => {

@@ -1,219 +1,219 @@
 {
-  "generated_at": "2026-09-27T16:20:09.927Z",
-  "fingerprint": "867ad30c055288a3",
-  "total": 5772,
-  "corpus_total": 7351,
+  "generated_at": "2026-10-01T17:17:26.557Z",
+  "fingerprint": "dbedb93d104bba80",
+  "total": 7813,
+  "corpus_total": 10010,
   "shards": [
     {
       "id": "#",
       "file": "#.json",
-      "count": 48,
-      "bytes": 16155
+      "count": 66,
+      "bytes": 21362
     },
     {
       "id": "a",
       "file": "a.json",
-      "count": 533,
-      "bytes": 178380
+      "count": 722,
+      "bytes": 241483
     },
     {
       "id": "b",
       "file": "b.json",
-      "count": 215,
-      "bytes": 72375
+      "count": 292,
+      "bytes": 96492
     },
     {
       "id": "c",
       "file": "c.json",
-      "count": 322,
-      "bytes": 110479
+      "count": 437,
+      "bytes": 149490
     },
     {
       "id": "d",
       "file": "d.json",
-      "count": 295,
-      "bytes": 94131
+      "count": 411,
+      "bytes": 131054
     },
     {
       "id": "e",
       "file": "e.json",
-      "count": 167,
-      "bytes": 53354
+      "count": 219,
+      "bytes": 69216
     },
     {
       "id": "f",
       "file": "f.json",
-      "count": 181,
-      "bytes": 58211
+      "count": 246,
+      "bytes": 79341
     },
     {
       "id": "g",
       "file": "g.json",
-      "count": 171,
-      "bytes": 53654
+      "count": 252,
+      "bytes": 80764
     },
     {
       "id": "h",
       "file": "h.json",
-      "count": 223,
-      "bytes": 71346
+      "count": 278,
+      "bytes": 89499
     },
     {
       "id": "i",
       "file": "i.json",
-      "count": 166,
-      "bytes": 52328
+      "count": 220,
+      "bytes": 69977
     },
     {
       "id": "j",
       "file": "j.json",
-      "count": 261,
-      "bytes": 85096
+      "count": 354,
+      "bytes": 114423
     },
     {
       "id": "k",
       "file": "k.json",
-      "count": 179,
-      "bytes": 58500
+      "count": 234,
+      "bytes": 76140
     },
     {
       "id": "l",
       "file": "l.json",
-      "count": 217,
-      "bytes": 69371
+      "count": 304,
+      "bytes": 97700
     },
     {
       "id": "m",
       "file": "m.json",
-      "count": 457,
-      "bytes": 150195
+      "count": 613,
+      "bytes": 204267
     },
     {
       "id": "n",
       "file": "n.json",
-      "count": 209,
-      "bytes": 69722
+      "count": 285,
+      "bytes": 94454
     },
     {
       "id": "o",
       "file": "o.json",
-      "count": 147,
-      "bytes": 45800
+      "count": 193,
+      "bytes": 61237
     },
     {
       "id": "p",
       "file": "p.json",
-      "count": 230,
-      "bytes": 76581
+      "count": 333,
+      "bytes": 110446
     },
     {
       "id": "q",
       "file": "q.json",
-      "count": 37,
-      "bytes": 11109
+      "count": 49,
+      "bytes": 14865
     },
     {
       "id": "r",
       "file": "r.json",
-      "count": 259,
-      "bytes": 82883
+      "count": 348,
+      "bytes": 111310
     },
     {
       "id": "s",
       "file": "s.json",
-      "count": 545,
-      "bytes": 181846
+      "count": 721,
+      "bytes": 240183
     },
     {
       "id": "t",
       "file": "t.json",
-      "count": 273,
-      "bytes": 87970
+      "count": 388,
+      "bytes": 126303
     },
     {
       "id": "u",
       "file": "u.json",
-      "count": 60,
-      "bytes": 19240
+      "count": 88,
+      "bytes": 28538
     },
     {
       "id": "v",
       "file": "v.json",
-      "count": 190,
-      "bytes": 60414
+      "count": 241,
+      "bytes": 77141
     },
     {
       "id": "w",
       "file": "w.json",
-      "count": 152,
-      "bytes": 47392
+      "count": 203,
+      "bytes": 64188
     },
     {
       "id": "x",
       "file": "x.json",
-      "count": 54,
-      "bytes": 17105
+      "count": 75,
+      "bytes": 24515
     },
     {
       "id": "y",
       "file": "y.json",
-      "count": 94,
-      "bytes": 29624
+      "count": 130,
+      "bytes": 41847
     },
     {
       "id": "z",
       "file": "z.json",
-      "count": 87,
-      "bytes": 29490
+      "count": 111,
+      "bytes": 37220
     }
   ],
   "categories": [
     {
       "id": "portfolio",
       "label": "Portfolio & CV",
-      "count": 1323
+      "count": 1387
     },
     {
       "id": "games",
       "label": "Games",
-      "count": 380
+      "count": 416
     },
     {
       "id": "docs",
       "label": "Docs & Wiki",
-      "count": 1085
+      "count": 1291
     },
     {
       "id": "blog",
       "label": "Blog",
-      "count": 888
+      "count": 1003
     },
     {
       "id": "dashboards",
       "label": "Dashboards & Data",
-      "count": 450
+      "count": 542
     },
     {
       "id": "tools",
       "label": "Tools & Utilities",
-      "count": 535
+      "count": 1034
     },
     {
       "id": "learning",
       "label": "Learning & Reference",
-      "count": 538
+      "count": 735
     },
     {
       "id": "showcase",
       "label": "Showcase & Data Viz",
-      "count": 207
+      "count": 289
     },
     {
       "id": "libraries",
       "label": "Libraries & Frameworks",
-      "count": 536
+      "count": 925
     }
   ],
-  "uncategorized": 1435,
+  "uncategorized": 2180,
   "schema": 2
 }

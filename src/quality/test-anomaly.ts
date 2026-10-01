@@ -4,6 +4,7 @@
  * to simulate a degraded run and asserts the detector reports it.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { PATHS } from "../paths";
 
 const H = "src/quality/data/probe-history.json";
 const original = readFileSync(H, "utf8");
@@ -16,14 +17,36 @@ if (hist.length < 1) {
 
 // Rewrite the most recent baseline as a "healthy past" so the current state
 // looks like a regression.
+//
+// The injected numbers are derived from the LIVE corpus, not hardcoded and not
+// copied from history. This fixture previously claimed a healthy past of
+// alive=9000/corpus=9000, which was only ever correct while the corpus was
+// smaller than 9,000. Once the real corpus grew past that, the "regression" it
+// injected was an improvement, the detector correctly declined to fire, and the
+// test failed while the detector was working exactly as intended. Deriving from
+// the corpus keeps the fixture a regression no matter how much the index grows.
+const corpusDb = JSON.parse(readFileSync(PATHS.corpus, "utf8"));
+const live = Object.values<any>(corpusDb.records ?? {});
+const liveAlive = live.filter((r) => r?.liveness === "alive").length;
+const livePct = live.length ? (liveAlive / live.length) * 100 : 0;
+const liveProbed = live.filter((r) => r?.last_checked);
+const liveTitlePct = liveProbed.length
+  ? (liveProbed.filter((r) => r?.title).length / liveProbed.length) * 100
+  : 0;
+
 const last = hist[hist.length - 1];
-last.alive_pct = 92.0;
-last.alive = 9000;
-last.corpus = 9000;
-last.title_yield = 90.0;
-last.flaky = 50;
+// Above the live values by enough to clear each detector's threshold, but
+// below the caps that would make the injected "healthy past" absurd.
+last.alive_pct = Math.min(99, livePct + 13);
+last.alive = Math.round(liveAlive * 1.1);
+last.corpus = Math.round(live.length * 1.1);
+last.title_yield = Math.min(99, liveTitlePct + 20);
+last.flaky = Math.max(0, Math.round(live.filter((r) => r?.liveness === "flaky").length / 2));
 writeFileSync(H, JSON.stringify(hist, null, 2));
-console.log(`  injected degraded baseline: alive_pct=92.0, corpus=9000, title_yield=90.0`);
+console.log(
+  `  live corpus ${live.length} (${livePct.toFixed(1)}% alive) -> injected healthy past: ` +
+    `alive_pct=${last.alive_pct.toFixed(1)}, corpus=${last.corpus}, title_yield=${last.title_yield.toFixed(1)}`,
+);
 
 const proc = Bun.spawn(["bun", "run", "src/quality/anomaly.ts"], { stdout: "pipe", stderr: "pipe" });
 const out = await new Response(proc.stdout).text();

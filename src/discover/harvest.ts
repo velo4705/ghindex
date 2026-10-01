@@ -21,7 +21,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { PATHS } from "../paths";
-import { pagesUrlFor, type Record } from "./core";
+import { pagesUrlFor, type Record } from "../index/core";
 import { PATHS } from "../paths";
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
