@@ -65,6 +65,55 @@ const SOFT_TTL_SECONDS = 600;
 const LIVENESS_TTL_ALIVE = 86400;
 const LIVENESS_TTL_DEAD = 3600;
 
+/**
+ * Tier-1 cache: this isolate's own memory.
+ *
+ * Measured on the deployed worker, `caches.default` returned a hit for only
+ * about half of a run of identical requests, all within seconds of each other
+ * and all in the same colo. That halves upstream spend, which is better than
+ * nothing, but it is not the "repeat queries are free" property the design
+ * assumes, and half of every burst still consumes the shared budget.
+ *
+ * A Worker isolate is reused across requests, so a small map in module scope
+ * absorbs the repeats that the edge cache misses. The edge cache still does the
+ * durable job across isolates and datacentres; this only has to cover the
+ * nearby requests, which is precisely where the misses were happening.
+ *
+ * Bounded and short-lived on purpose: an isolate is a shared process, so an
+ * unbounded map would be a memory leak, and a long TTL would keep serving
+ * anonymous results for too long after the token is fixed.
+ */
+const MEMO_TTL_MS = 60_000;
+const MEMO_MAX = 200;
+const memo = new Map<string, { text: string; headers: Record<string, string>; at: number }>();
+
+function memoGet(key: string) {
+  const hit = memo.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > MEMO_TTL_MS) {
+    memo.delete(key);
+    return null;
+  }
+  // Re-insert to make this the most recently used entry.
+  memo.delete(key);
+  memo.set(key, hit);
+  return hit;
+}
+
+function memoSet(key: string, value: { text: string; headers: Record<string, string> }) {
+  // Map preserves insertion order, so the first key is the least recent.
+  if (memo.size >= MEMO_MAX) {
+    const oldest = memo.keys().next();
+    if (!oldest.done) memo.delete(oldest.value);
+  }
+  memo.set(key, { ...value, at: Date.now() });
+}
+
+/** Exposed for tests so one test's entries cannot mask another's. */
+export function __clearMemo() {
+  memo.clear();
+}
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   // Public, immutable-ish search data. Wide CORS is intentional: the payload
@@ -91,6 +140,35 @@ function healthResponse(env: Record<string, unknown>): Response {
 }
 
 /**
+ * Reconcile a cached entry's provenance against the worker's current state.
+ *
+ * A cached body records how the data was *fetched*. The `x-gh-authed` header
+ * records how the current request path *would* authenticate. When the secret was
+ * fixed after an entry had already been cached under the broken one, the two
+ * disagreed: the header said `true` while the body still said
+ * `degraded: "token-rejected"`, which is self-contradictory and reads to a
+ * client as though something were still wrong.
+ *
+ * "Degraded" describes the request path, not the rows, so it is only meaningful
+ * while the path is still degraded. The historical fact is kept as
+ * `fetchedAuthed`, and the old state is reported as `recovered` instead of
+ * lingering as a live condition.
+ */
+function reconcileProvenance(
+  meta: Record<string, unknown>,
+  env: Record<string, unknown>,
+): Record<string, unknown> {
+  const authed = Boolean(env.GITHUB_TOKEN);
+  const wasDegraded = meta.degraded === "token-rejected";
+  const out: Record<string, unknown> = { ...meta, authed, fetchedAuthed: meta.authed === true };
+  if (wasDegraded) {
+    delete out.degraded;
+    out.recovered = authed ? "token-restored" : "still-degraded";
+  }
+  return out;
+}
+
+/**
  * Proxy one page of GitHub search, cached at the edge.
  *
  * Returns the upstream body with an extra `_cache` field describing where it
@@ -113,12 +191,46 @@ async function handleSearch(
   }
 
   const key = searchCacheKey(url);
+  const authed = Boolean(env.GITHUB_TOKEN);
+
+  // Tier 1: this isolate's own memory, checked before the edge cache.
+  const hot = memoGet(key);
+  if (hot) {
+    const body = JSON.parse(hot.text) as Record<string, unknown>;
+    const meta = reconcileProvenance((body._cache ?? {}) as Record<string, unknown>, env);
+    return new Response(JSON.stringify({ ...body, _cache: meta }), {
+      headers: { ...hot.headers, "x-gh-authed": String(authed), "x-cache": "MEMO" },
+    });
+  }
+
   const cached = cache ? await cache.match(new Request(key)) : null;
 
   if (cached) {
-    const body = await cached.json();
-    const age = Math.max(0, Math.round(Date.now() / 1000) - (body?._cache?.cachedAt ?? 0));
-    const fresh = age < SOFT_TTL_SECONDS;
+    const text = await cached.text();
+    const body = JSON.parse(text) as Record<string, unknown>;
+    const raw = (body._cache ?? {}) as Record<string, unknown>;
+    const age = Math.max(0, Math.round(Date.now() / 1000) - (Number(raw.cachedAt) || 0));
+
+    /**
+     * An entry gathered while the secret was broken is refreshed immediately
+     * once a working secret exists, rather than being trusted for the rest of
+     * the soft window: it was produced under a shared quota and its provenance
+     * no longer describes this worker.
+     */
+    const gatheredWhileBroken = raw.degraded === "token-rejected";
+    const fresh = age < SOFT_TTL_SECONDS && !(gatheredWhileBroken && authed);
+    const meta = { ...reconcileProvenance(raw, env), age, fresh, source: fresh ? "hit" : "stale" };
+
+    // Promote into the isolate cache too: a hit here still cost a cache read,
+    // and the next request in this same isolate can skip even that.
+    const headers: Record<string, string> = {
+      ...JSON_HEADERS,
+      "cache-control": `public, max-age=${HARD_TTL_SECONDS}`,
+      "x-cache": fresh ? "HIT" : "STALE",
+      "x-gh-authed": String(authed),
+    };
+    memoSet(key, { text: JSON.stringify({ ...body, _cache: meta }), headers });
+
     if (!fresh && ctx) {
       // Stale-while-revalidate: hand back what we have, refresh behind it.
       const refresh = refreshSearch(key, q, url, env).then(
@@ -126,13 +238,7 @@ async function handleSearch(
       );
       ctx.waitUntil(refresh);
     }
-    return new Response(
-      JSON.stringify({
-        ...body,
-        _cache: { ...body._cache, age, fresh, source: fresh ? "hit" : "stale" },
-      }),
-      { headers: { ...JSON_HEADERS, "x-cache": fresh ? "HIT" : "STALE", "x-gh-authed": String(Boolean(env.GITHUB_TOKEN)) } },
-    );
+    return new Response(JSON.stringify({ ...body, _cache: meta }), { headers });
   }
 
   const upstream = await refreshSearch(key, q, url, env);
@@ -143,10 +249,19 @@ async function handleSearch(
     );
   }
 
-  // A rate-limited or failed upstream must not be cached, or the worker would
-  // replay its own failure to every visitor until the TTL expired.
-  if (upstream.status === 200 && cache) {
-    ctx?.waitUntil(cache.put(new Request(key), upstream.clone()));
+  /**
+   * A rate-limited or failed upstream must not be cached, or the worker would
+   * replay its own failure to every visitor until the TTL expired.
+   */
+  if (upstream.status === 200) {
+    const text = await upstream.clone().text();
+    const headers = Object.fromEntries(upstream.headers.entries());
+    memoSet(key, { text, headers });
+    if (cache) {
+      ctx?.waitUntil(
+        cache.put(new Request(key), new Response(text, { headers: upstream.headers })),
+      );
+    }
   }
   return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
 }

@@ -10,21 +10,20 @@
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
 <title>ghindex — index of GitHub Pages sites</title>
 <!--
-  Optional edge search worker. Leave empty to talk to GitHub directly, which is
-  the correct default: this project is served from *.github.io, a domain
-  Cloudflare cannot sit in front of, so the worker runs on its own hostname and
-  is called cross-origin.
+  Edge search worker.
 
-  When it is deployed, put its URL here, e.g.
-    <meta name="ghindex-edge" content="https://ghindex-search.<sub>.workers.dev">
+  This project is served from *.github.io, a domain Cloudflare cannot sit in
+  front of, so the worker runs on its own hostname and is called cross-origin.
+  Keeping the token server-side means repeat queries are served from an edge
+  cache instead of each visitor spending their own GitHub rate limit, and it is
+  the only way to liveness-check a real-time result, since a browser cannot make
+  a cross-origin HEAD and get an answer.
 
-  With it set, searches go through a server-side cache that holds the GitHub
-  token, so repeat queries cost no rate limit and real-time results can be
-  liveness-checked. With it empty or unreachable, search falls back to GitHub
-  using each visitor's own IP budget. Nothing here is required for search to
-  work.
+  Clear this value and the page talks to GitHub directly instead, using each
+  visitor's own IP budget. Search works either way, so a worker outage is a
+  slower search rather than a broken one.
 -->
-<meta name="ghindex-edge" content="" />
+<meta name="ghindex-edge" content="https://ghindex-search.ghindex.workers.dev" />
 <style>
   /* ---------------------------------------------------------------------
      Design tokens. One scale for colour, radius, shadow and motion so the

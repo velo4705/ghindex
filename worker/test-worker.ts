@@ -14,7 +14,7 @@ import {
   normalizeQuery,
   searchCacheKey,
 } from "./src/query.ts";
-import { handleRequest } from "./src/index.ts";
+import { handleRequest, __clearMemo } from "./src/index.ts";
 
 let fail = 0;
 const eq = (name: string, got: string, want: string) => {
@@ -68,6 +68,7 @@ function fakeCtx() {
 const realFetch = globalThis.fetch;
 
 let ghCalls = 0;
+__clearMemo();
 let lastAuth: string | null = null;
 
 function stubGithub(handler: (url: URL) => Response) {
@@ -143,6 +144,7 @@ check("junk rejected", !isProbeAllowed("not a url"));
 
 console.log("=== cache absorbs repeat queries ===");
 ghCalls = 0;
+__clearMemo();
 stubGithub(() => ghOk([{ full_name: "a/b", has_pages: true }], 4321));
 {
   const { cache, store } = fakeCache();
@@ -160,14 +162,28 @@ stubGithub(() => ghOk([{ full_name: "a/b", has_pages: true }], 4321));
   const second = await call("/api/search?q=Portfolio", { GITHUB_TOKEN: "t" }, cache, ctx);
   await drain();
   const b2 = (await second.json()) as any;
+  const tier = second.headers.get("x-cache") ?? "";
 
-  eq("differently-cased repeat is a hit", second.headers.get("x-cache") ?? "none", "HIT");
+  check("differently-cased repeat is served from a cache tier",
+    tier === "MEMO" || tier === "HIT", `got ${tier}`);
   eq("repeat costs no upstream call", String(ghCalls), "1");
-  check("hit reports its age", typeof b2._cache.age === "number");
-  check("hit is marked fresh", b2._cache.fresh === true);
+
+  // The isolate tier answers first when it is warm, so force the edge tier by
+  // dropping the memo and asking again: this is what a request landing in a
+  // different isolate sees.
+  __clearMemo();
+  const third = await call("/api/search?q=portfolio", { GITHUB_TOKEN: "t" }, cache, ctx);
+  await drain();
+  const b3 = (await third.json()) as any;
+  eq("a cold isolate is served by the edge cache", third.headers.get("x-cache") ?? "", "HIT");
+  eq("and still no upstream call", String(ghCalls), "1");
+  check("edge hit reports its age", typeof b3._cache.age === "number", JSON.stringify(b3._cache));
+  check("edge hit is marked fresh", b3._cache.fresh === true);
+  void b2;
 }
 
 console.log("=== stale-while-revalidate ===");
+__clearMemo();
 {
   const { cache, store } = fakeCache();
   const { ctx, drain } = fakeCtx();
@@ -184,6 +200,7 @@ console.log("=== stale-while-revalidate ===");
   // call would never return, which is a stronger assertion than counting
   // fetches: it proves the visitor's response does not depend on GitHub at all.
   ghCalls = 0;
+__clearMemo();
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.hostname === "api.github.com") {
@@ -209,6 +226,7 @@ console.log("=== stale-while-revalidate ===");
 
 console.log("=== rate limits are not cached ===");
 ghCalls = 0;
+__clearMemo();
 let alwaysLimited = true;
 stubGithub(() =>
   alwaysLimited
@@ -240,6 +258,7 @@ stubGithub(() =>
 
 console.log("=== token handling ===");
 ghCalls = 0;
+__clearMemo();
 stubGithub(() => ghOk([]));
 {
   const { cache } = fakeCache();
@@ -278,6 +297,7 @@ stubGithub(() => ghOk([]));
 
 console.log("=== a rejected token degrades instead of failing ===");
 ghCalls = 0;
+__clearMemo();
 /**
  * Behaves like the real API: a request carrying credentials is refused, a
  * request without them succeeds. A stub that 401'd everything would make the
@@ -307,6 +327,7 @@ stubGithub((_url) => {
 }
 
 ghCalls = 0;
+__clearMemo();
 stubGithub(() => new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 }));
 {
   // No token configured at all: nothing to retry, so the failure surfaces.
@@ -322,6 +343,7 @@ stubGithub(() => new Response(JSON.stringify({ message: "Bad credentials" }), { 
 
 console.log("=== liveness ===");
 ghCalls = 0;
+__clearMemo();
 let probed: string[] = [];
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input));
@@ -387,11 +409,109 @@ console.log("=== degraded mode ===");
 {
   // No cache available at all (e.g. caches.default missing): must still work.
   ghCalls = 0;
+__clearMemo();
   stubGithub(() => ghOk([{ full_name: "a/b", has_pages: true }]));
   const res = await call("/api/search?q=portfolio", {}, null, null);
   eq("serves without a cache", String(res.status), "200");
   eq("and still reached GitHub", String(ghCalls), "1");
   check("response carries provenance", typeof (res.json() as any).then === "function");
+}
+
+console.log("=== isolate memo (tier 1) ===");
+ghCalls = 0;
+__clearMemo();
+stubGithub(() => ghOk([{ full_name: "a/b", has_pages: true }], 12));
+{
+  const { ctx, drain } = fakeCtx();
+
+  // No cache at all: the memo is the only defence, so it has to work alone.
+  const first = await call("/api/search?q=portfolio", {}, null, ctx);
+  await drain();
+  eq("first call reaches GitHub", String(ghCalls), "1");
+  eq("and is a MISS", first.headers.get("x-cache") ?? "", "MISS");
+
+  const second = await call("/api/search?q=portfolio", {}, null, ctx);
+  await drain();
+  eq("second call is served from the isolate", second.headers.get("x-cache") ?? "", "MEMO");
+  eq("with no upstream call at all", String(ghCalls), "1");
+  check("and returns the same body", ((await second.json()) as any).total_count === 12);
+
+  // The memo is keyed the same way the edge cache is, so it normalises too.
+  const third = await call("/api/search?q=PORTFOLIO", {}, null, ctx);
+  await drain();
+  eq("case variant still hits", third.headers.get("x-cache") ?? "", "MEMO");
+  eq("still one upstream call", String(ghCalls), "1");
+
+  // A different query must not be served the wrong answer.
+  const other = await call("/api/search?q=something-else", {}, null, ctx);
+  await drain();
+  eq("a different query still goes upstream", String(ghCalls), "2");
+  check("and is not the memoised body", other.headers.get("x-cache") === "MISS");
+}
+
+ghCalls = 0;
+__clearMemo();
+stubGithub(() => new Response(JSON.stringify({ message: "rate limited" }), { status: 403 }));
+{
+  // A failure must not be memoised, or one rate limit would be served to
+  // everyone in this isolate for the rest of the TTL.
+  const { ctx, drain } = fakeCtx();
+  await call("/api/search?q=failtest", {}, null, ctx);
+  await drain();
+  const second = await call("/api/search?q=failtest", {}, null, ctx);
+  await drain();
+  eq("failure is retried, not memoised", String(ghCalls), "2");
+  check("second attempt is still a MISS", second.headers.get("x-cache") !== "MEMO");
+}
+
+console.log("=== provenance is reconciled when the secret is fixed ===");
+ghCalls = 0;
+__clearMemo();
+stubGithub(() => {
+  const bad = lastAuth === "Bearer broken-pat";
+  return bad
+    ? new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 })
+    : ghOk([{ full_name: "a/b", has_pages: true }], 55);
+});
+{
+  const { cache, store } = fakeCache();
+  const { ctx, drain } = fakeCtx();
+
+  // Fetch once while the secret is broken: this populates the cache degraded.
+  const broken = await call("/api/search?q=reconcile", { GITHUB_TOKEN: "broken-pat" }, cache, ctx);
+  await drain();
+  const brokenBody = (await broken.json()) as any;
+  check("entry is cached while degraded", brokenBody._cache.degraded === "token-rejected", JSON.stringify(brokenBody._cache));
+  check("cached body records it was unauthenticated", brokenBody._cache.authed === false);
+
+  // Now the secret is repaired. The cached entry must stop claiming to be
+  // degraded, because that describes the old request path, not this one.
+  __clearMemo();
+  const fixed = await call("/api/search?q=reconcile", { GITHUB_TOKEN: "good-pat" }, cache, ctx);
+  await drain();
+  const fixedBody = (await fixed.json()) as any;
+
+  check("header reports authenticated", fixed.headers.get("x-gh-authed") === "true");
+  check("body no longer claims degradation", fixedBody._cache.degraded === undefined, JSON.stringify(fixedBody._cache));
+  check("body reports authenticated", fixedBody._cache.authed === true);
+  check("the historical fact is kept", fixedBody._cache.fetchedAuthed === false);
+  check("recovery is reported", fixedBody._cache.recovered === "token-restored", JSON.stringify(fixedBody._cache));
+  check("a still-degraded entry is not trusted fresh",
+    fixedBody._cache.fresh === false, `fresh=${fixedBody._cache.fresh}`);
+
+  // And the isolate memo must not reintroduce the stale claim either.
+  const memoed = await call("/api/search?q=reconcile", { GITHUB_TOKEN: "good-pat" }, cache, ctx);
+  const memoBody = (await memoed.json()) as any;
+  check("memo path reconciles too", memoBody._cache.degraded === undefined, JSON.stringify(memoBody._cache));
+  check("memo path reports recovery", memoBody._cache.recovered === "token-restored");
+
+  // Still degraded (no secret at all): the flag stays, because it is still true.
+  __clearMemo();
+  const anon = await call("/api/search?q=reconcile2", {}, cache, ctx);
+  await drain();
+  const anonBody = (await anon.json()) as any;
+  check("unauthenticated entry is not falsely marked recovered",
+    anonBody._cache.recovered === undefined && anonBody._cache.authed === false, JSON.stringify(anonBody._cache));
 }
 
 globalThis.fetch = realFetch;

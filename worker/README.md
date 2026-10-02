@@ -19,8 +19,40 @@ searchers exhaust. It also publishes the credential, since anything in these
 static files is readable via view-source.
 
 Keeping the token server-side avoids both problems, and the cache is what makes
-it a genuine improvement rather than a lateral move: the second person to search
-"portfolio" triggers zero upstream requests.
+it a genuine improvement rather than a lateral move: repeat queries mostly avoid
+upstream requests.
+
+### Measured cache hit rate, and the caveat
+
+Measured against the deployed worker: 16 identical requests issued ~300ms
+apart, all landing in the same colo (`BOM`).
+
+| build | served without an upstream call |
+| --- | --- |
+| `caches.default` only | ~50% (and often worse; one run showed 6%) |
+| isolate memo + `caches.default` | 50-56% |
+
+The isolate memo clearly does its job — runs show `MEMO=7`, `MEMO=8` — but the
+total barely moves, which means requests are being spread across enough Worker
+isolates that no single-tier cache covers them, and cross-isolate reads through
+`caches.default` are missing far more often than they should.
+
+So the honest claim is **"roughly halves upstream spend", not "repeat queries
+are free"**. That is still worth having, and it is why the token matters most:
+fixing the secret takes the shared budget from 10/min to 30/min, which is a
+larger lever than any cache tuning here.
+
+If this ever needs to be better than that, the fix is a durable KV namespace
+rather than more cache tuning. KV is globally replicated and consistent, so a
+miss means a genuine miss. It needs one namespace and a binding:
+
+```sh
+bunx wrangler kv:namespace create MEMO
+```
+
+It was not adopted here only because it adds a binding and a second
+consistency model to reason about for a project whose real bottleneck is
+GitHub's search cap.
 
 ## Why it cannot sit in front of `*.github.io`
 
@@ -70,12 +102,17 @@ means the browser module has one parser rather than two.
 ### Caching
 
 - Hard TTL 3600s (the edge holds the entry), soft TTL 600s.
-- Inside the soft window a hit is returned with no upstream call.
-- Past it the entry is still returned immediately and revalidated in the
-  background via `ctx.waitUntil`. A popular term degrades to "slightly stale
-  for one visitor" rather than "a GitHub request per visitor".
-- Upstream failures and rate limits are never cached, so the Worker does not
-  replay its own failure to every visitor until the TTL expires.
+- Two tiers: a bounded in-isolate map (60s, 200 entries) checked first, then
+  `caches.default`. The memo exists because the edge cache was observed missing
+  on roughly half of near-simultaneous identical requests, and a reused isolate
+  covers exactly those.
+- Inside the soft window a hit is returned with no upstream call. `x-cache`
+  reports `MEMO`, `HIT`, `STALE` or `MISS`.
+- Past the soft window the entry is still returned immediately and revalidated
+  in the background via `ctx.waitUntil`. A popular term degrades to "slightly
+  stale for one visitor" rather than "a GitHub request per visitor".
+- Upstream failures and rate limits are never cached at either tier, so the
+  Worker does not replay its own failure to every visitor until the TTL expires.
 - Cache keys are normalised (case-folded, whitespace-collapsed, parameters
   sorted and clamped). Without this, `portfolio`, `Portfolio` and `portfolio `
   are three entries and the cache never actually hits.
