@@ -27,7 +27,7 @@ import { createHash } from "node:crypto";
 import { isPublishable, decodeEntities, type Record } from "../index/core";
 import { classify, CATEGORIES, CATEGORY_LABELS } from "../classify/taxonomy";
 import { PATHS } from "../paths";
-import { applyStarQuota } from "./star-quota";
+import { applyStarQuota, STAR_QUOTA } from "./star-quota";
 
 const outArg = process.argv.indexOf("--out");
 const OUT = outArg >= 0 ? process.argv[outArg + 1] : PATHS.data;
@@ -121,13 +121,12 @@ async function main() {
       (dropped ? ` (${dropped} duplicate URLs collapsed)` : ""),
   );
 
-  const aliveForPublish = deduped;
-  if (aliveForPublish.length === 0) {
+  if (deduped.length === 0) {
     console.error("[build] nothing alive yet - refusing to publish an empty index");
     process.exit(1);
   }
 
-  const balanced = applyStarQuota(aliveForPublish);
+  const balanced = applyStarQuota(deduped);
   if (balanced.length === 0) {
     console.error("[build] the star quota removed everything - refusing to publish an empty index");
     process.exit(1);
@@ -201,8 +200,12 @@ async function main() {
   const indexFingerprint = createHash("sha256")
     .update(
       JSON.stringify({
-        total: aliveForPublish.length,
+        total: balanced.length,
         corpus_total: all.length,
+        // Recorded so a change to the cap is visible in the published artifact
+        // and always invalidates the fingerprint, even on a run where the totals
+        // happen to come out the same.
+        star_quota: STAR_QUOTA,
         shards: manifestShards.map((s) => [s.file, s.count, s.bytes]),
         categories: CATEGORIES.map((id) => [id, catTotals.get(id) ?? 0]),
         schema: 2,
@@ -214,8 +217,9 @@ async function main() {
   const manifest = {
     generated_at: new Date().toISOString(),
     fingerprint: indexFingerprint,
-    total: aliveForPublish.length,
+    total: balanced.length,
     corpus_total: all.length,
+    star_quota: STAR_QUOTA,
     shards: manifestShards,
     // Category vocabulary ships with the manifest so labels live in one place.
     categories: CATEGORIES.map((id) => ({
@@ -223,7 +227,7 @@ async function main() {
       label: CATEGORY_LABELS[id],
       count: catTotals.get(id) ?? 0,
     })),
-    uncategorized: aliveForPublish.filter((r) => classify(r.topics ?? []).categories.length === 0).length,
+    uncategorized: balanced.filter((r) => classify(r.topics ?? []).categories.length === 0).length,
     schema: 2,
   };
 
