@@ -478,6 +478,15 @@
   }
   .wide p.note { margin: 0 0 .6rem; color: var(--fg-muted); font-size: .8rem; }
   .wide .row { border-left: 3px solid var(--accent); }
+  /* The "show more" control, rendered inside the on-demand section. */
+  .wide #wide-more { margin-top: .8rem; }
+  /* Star counts drive the ranking, so show them rather than hiding the signal. */
+  .pill.stars {
+    background: transparent;
+    border-color: var(--star, #b8860b);
+    color: var(--star, #b8860b);
+    font-variant-numeric: tabular-nums;
+  }
   .pill {
     display: inline-block;
     font-size: .62rem;
@@ -557,12 +566,12 @@
       </div>
 
       <button type="button" id="wide" class="btn"
-              title="Also ask GitHub, which reaches sites not in this index">
+              title="GitHub is searched automatically as you type. Add a token to raise the search rate limit.">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5M11 8v6M8 11h6" />
         </svg>
-        <span>Search all of GitHub</span>
+        <span>Search rate limit</span>
       </button>
 
       <button type="button" id="view" class="btn" aria-pressed="false"

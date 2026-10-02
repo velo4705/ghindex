@@ -161,35 +161,116 @@ const userToken = () => $("token")?.value.trim() || "";
  * the net on demand rather than waiting for a harvest that can never enumerate
  * everything, because the API caps at 1,000 results per query.
  */
-const wide = { inflight: null, lastQuery: "", results: [], truncated: false, error: null };
+/**
+ * State for the on-demand GitHub search.
+ *
+ * `pages` is how many pages of 100 have been loaded so far. It grows by one per
+ * "show more" click rather than jumping to 10 at once, because the budget is
+ * 10 requests/minute keyed to the visitor's IP: spending it all on the first
+ * query means the second query fails. One page (~35 Pages sites) is enough for
+ * an instant first screen; the rest are opt-in.
+ */
+const wide = {
+  inflight: null,
+  lastQuery: "",
+  results: [],
+  total: 0,
+  pages: 0,
+  truncated: false,
+  hasMore: false,
+  partial: null,
+  error: null,
+  loading: false,
+};
 
-async function runWideSearch() {
+/** Pages loaded per click. One page = 100 repos = ~35 Pages sites. */
+const WIDE_PAGE_STEP = 1;
+
+/** Debounce before asking GitHub, so typing does not spend the rate limit. */
+const WIDE_DEBOUNCE_MS = 700;
+
+async function runWideSearch(opts = {}) {
   const q = $("q").value.trim();
   if (!q) {
-    wide.results = [];
-    wide.error = null;
+    resetWide();
     renderWide();
     return;
   }
-  // One request per distinct query: the unauthenticated limit is 10/min.
-  if (wide.lastQuery === q && wide.results.length) return;
+
+  const fresh = opts.fresh || wide.lastQuery !== q;
+  if (!fresh && wide.results.length && !opts.more) return;
+  // "More" is an explicit click, so it always spends a request.
+  const pages = fresh ? WIDE_PAGE_STEP : wide.pages + WIDE_PAGE_STEP;
 
   wide.inflight?.abort();
   const ctrl = new AbortController();
   wide.inflight = ctrl;
-  wide.error = null;
-  renderWide("Asking GitHub…");
+  wide.loading = true;
+  if (fresh) {
+    wide.error = null;
+    wide.partial = null;
+  }
+  renderWide(fresh ? "Asking GitHub…" : null);
 
-  const { searchGitHub } = await import("./github-search.js");
-  const res = await searchGitHub(q, { token: userToken(), signal: ctrl.signal });
+    const { searchGitHub } = await import("./github-search.js");
+
+  /**
+   * An aborted search is not a failure, it is a superseded one: typing another
+   * character aborts the previous request, and searchGitHub rethrows AbortError
+   * so its callers can tell the two apart. That rethrow used to escape
+   * unhandled, because every call site here is a timer callback or an event
+   * handler that ignores the returned promise. The result was a
+   * `Uncaught (in promise) AbortError` in the console on every fast typist,
+   * which the browser test caught as "no console errors" failing intermittently
+   * depending on how the keystrokes interleaved.
+   */
+  let res;
+  try {
+    res = await searchGitHub(q, {
+      token: userToken(),
+      signal: ctrl.signal,
+      pages,
+    });
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      wide.inflight = null;
+      wide.loading = false;
+      return;
+    }
+    wide.inflight = null;
+    wide.loading = false;
+    wide.error = `Could not reach GitHub (${String(err).slice(0, 60)}).`;
+    renderWide();
+    return;
+  }
   if (ctrl.signal.aborted) return;
 
   wide.inflight = null;
+  wide.loading = false;
   wide.lastQuery = q;
+  wide.pages = res.pagesFetched;
   wide.results = res.results;
+  wide.total = res.total;
   wide.truncated = res.truncated;
+  wide.hasMore = res.hasMore;
+  wide.partial = res.partial ?? null;
   wide.error = res.error ?? null;
   renderWide();
+}
+
+/** Drop every on-demand result; used when the query box is cleared. */
+function resetWide() {
+  wide.inflight?.abort();
+  wide.inflight = null;
+  wide.loading = false;
+  wide.lastQuery = "";
+  wide.results = [];
+  wide.total = 0;
+  wide.pages = 0;
+  wide.truncated = false;
+  wide.hasMore = false;
+  wide.partial = null;
+  wide.error = null;
 }
 
 function wideRowHtml(r) {
@@ -200,9 +281,13 @@ function wideRowHtml(r) {
     .slice(0, 4)
     .map((t) => `<span class="tag">${esc(t)}</span>`)
     .join("");
+  const stars = Number(r.stars) || 0;
+  const starBadge = stars
+    ? `<span class="pill stars" title="${stars.toLocaleString()} GitHub stars">★ ${stars.toLocaleString()}</span>`
+    : "";
   return `<article class="row">
     <h3><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>
-      <span class="pill">not indexed</span></h3>
+      ${starBadge}<span class="pill">not indexed</span></h3>
     <div class="url">${esc(href)}</div>
     ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
     <div class="tags">${tags}</div>
@@ -243,13 +328,30 @@ function renderWide(statusText) {
   }
 
   const n = wide.results.length;
-  const note = wide.truncated
-    ? `GitHub reported more matches than it returns (capped at 1,000 per query). These are the Pages-enabled results it did return.`
-    : `${n} Pages-enabled result${n === 1 ? "" : "s"} from GitHub. Outside this index, so not checked for liveness.`;
+  const bits = [`${n.toLocaleString()} Pages site${n === 1 ? "" : "s"} from GitHub, most popular first`];
+  if (wide.total > n) {
+    bits.push(
+      `GitHub reports ${wide.total.toLocaleString()} matching repos` +
+        (wide.truncated ? ", and never returns more than 1,000 per query" : ""),
+    );
+  }
+  if (wide.pages) bits.push(`${wide.pages} of up to 10 pages loaded`);
+  if (wide.partial) bits.push(wide.partial);
+  bits.push("Outside this index, so not checked for liveness.");
+
+  const more =
+    wide.hasMore || wide.loading
+      ? `<button type="button" id="wide-more" class="btn" ${wide.loading ? "disabled" : ""}>` +
+        (wide.loading ? "Loading…" : `Show more (${n.toLocaleString()} so far)`) +
+        `</button>`
+      : wide.total > n
+        ? `<p class="note">Reached GitHub's per-query limit. Narrow the search to see different results.</p>`
+        : "";
 
   el.innerHTML =
-    `<h2>Also on GitHub</h2><p class="note">${esc(note)}</p>` +
-    wide.results.map(wideRowHtml).join("");
+    `<h2>Also on GitHub</h2><p class="note">${esc(bits.join(" "))}</p>` +
+    wide.results.map(wideRowHtml).join("") +
+    more;
 }
 
 function tagsHtml(row) {
@@ -419,9 +521,23 @@ $("f").addEventListener("submit", (e) => {
 });
 
 let debounce;
+let wideDebounce;
 $("q").addEventListener("input", () => {
   clearTimeout(debounce);
   debounce = setTimeout(runSearch, 200);
+  // Ask GitHub too, but only once typing pauses. The unauthenticated search
+  // budget is 10 requests/minute keyed to the visitor's IP, so searching on
+  // every keystroke would exhaust it within one sentence. A pause means a
+  // deliberate query.
+  clearTimeout(wideDebounce);
+  wideDebounce = setTimeout(() => runWideSearch(), WIDE_DEBOUNCE_MS);
+});
+
+/** "Show more" is delegated, because the button is re-rendered on every update. */
+document.addEventListener("click", (e) => {
+  if (e.target instanceof HTMLElement && e.target.id === "wide-more") {
+    runWideSearch({ more: true });
+  }
 });
 
 $("view").addEventListener("click", () => {
@@ -441,11 +557,21 @@ $("stars").addEventListener("change", (e) => {
   runSearch();
 });
 
+/**
+ * The button now only reveals the token field.
+ *
+ * Searching GitHub used to require this click. It does not any more: typing
+ * triggers a debounced search automatically. Keeping an explicit trigger would
+ * suggest the on-demand results are optional, when they are now the wider half
+ * of every search, so the button is reduced to the one thing that genuinely
+ * still needs a click -- supplying a token.
+ */
 $("wide").addEventListener("click", () => {
   const showing = $("tokenrow").hidden;
   $("tokenrow").hidden = !showing;
   if (showing) $("token").focus();
-  runWideSearch();
+  // Re-run only if there is already something to extend.
+  if (!showing && wide.lastQuery) runWideSearch({ fresh: true });
 });
 
 // A token is supplied per tab; it is never written to storage.
@@ -453,7 +579,7 @@ $("token").addEventListener("change", () => {
   if (wide.lastQuery) {
     // Re-run so the new limit takes effect for the current query.
     wide.lastQuery = "";
-    runWideSearch();
+    runWideSearch({ fresh: true });
   }
 });
 

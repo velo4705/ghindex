@@ -35,7 +35,21 @@
 
 /** GitHub caps a search at 1,000 results; say so rather than looking broken. */
 const RESULT_CAP = 1000;
-const PER_PAGE = 30;
+
+/**
+ * Results per API call. 100 is the maximum the search API allows, and it is
+ * worth using: the unauthenticated budget is 10 calls/minute, so per_page=30
+ * would reach 300 repos total while per_page=100 reaches 1,000. Same number of
+ * requests, ten times the coverage.
+ */
+const PER_PAGE = 100;
+
+/**
+ * Pages fetched per search. GitHub serves at most 10 pages of 100, which is
+ * exactly the 1,000-result cap; asking for an 11th returns HTTP 422.
+ */
+const MAX_PAGES = 10;
+
 const API = "https://api.github.com/search/repositories";
 
 /**
@@ -85,77 +99,166 @@ function buildQuery(input) {
 /** Exposed for tests only. */
 export const buildQueryForTest = buildQuery;
 
-/**
- * Search GitHub for Pages-enabled repositories.
- *
- * @param {string} input free text from the user
- * @param {{token?: string, signal?: AbortSignal}} [opts]
- * @returns {Promise<{query:string, results:Array, total:number, truncated:boolean, error?:string}>}
- */
-export async function searchGitHub(input, opts = {}) {
-  const q = buildQuery(input);
-  if (!q) return { query: input, results: [], total: 0, truncated: false };
+/** Exposed for tests only. */
+export const MAX_PAGES_FOR_TEST = MAX_PAGES;
 
+/**
+ * Map one API item to a result row, or null if it has no Pages site.
+ *
+ * `has_pages` is a field on each item rather than a usable query qualifier --
+ * measured, `stars:100..299 has:pages` and `stars:100..299` return identical
+ * totals of 287,226, so GitHub accepts the qualifier and ignores it. The filter
+ * has to happen here.
+ */
+function toResult(r) {
+  if (!r || !r.has_pages) return null;
+  const owner = (r.owner && r.owner.login) || String(r.full_name || "").split("/")[0];
+  return {
+    full_name: r.full_name || `${owner}/${r.name}`,
+    owner,
+    repo: r.name,
+    url: pagesUrlFor(owner, r.name, r.homepage || null),
+    description: r.description || null,
+    topics: Array.isArray(r.topics) ? r.topics : [],
+    stars: Number(r.stargazers_count) || 0,
+  };
+}
+
+/**
+ * Order results the way a search engine should: most popular first.
+ *
+ * GitHub returns its own relevance ordering, which for an unqualified query
+ * mixes in repos that merely mention the term. Stars are the only popularity
+ * signal available, and they are also what makes niche finds reachable: a
+ * long-tail site has few stars, so without this it sits below whatever
+ * happened to rank first in GitHub's ordering.
+ */
+function byPopularity(a, b) {
+  return (b.stars - a.stars) || a.full_name.localeCompare(b.full_name);
+}
+
+/** Read the search rate-limit reset, if the response carries one. */
+function resetSeconds(res) {
+  const reset = Number(res.headers.get("x-ratelimit-reset") || 0);
+  return reset ? Math.max(1, Math.ceil((reset * 1000 - Date.now()) / 1000)) : 60;
+}
+
+/**
+ * Fetch one page of results.
+ *
+ * Returns a discriminated result rather than throwing so the caller can decide
+ * whether a mid-pagination rate limit is fatal (nothing found) or partial
+ * (keep what we already have).
+ */
+async function fetchPage(input, page, opts) {
   const headers = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
   };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
 
-  const url = `${API}?q=${encodeURIComponent(q)}&per_page=${PER_PAGE}`;
+  const url =
+    `${API}?q=${encodeURIComponent(buildQuery(input))}` +
+    `&per_page=${PER_PAGE}&sort=stars&order=desc&page=${page}`;
 
-  try {
-    const res = await fetch(url, { headers, signal: opts.signal });
+  const res = await fetch(url, { headers, signal: opts.signal });
 
-    if (res.status === 403 || res.status === 429) {
-      const reset = Number(res.headers.get("x-ratelimit-reset") || 0);
-      const wait = reset ? Math.max(1, Math.ceil((reset * 1000 - Date.now()) / 1000)) : 60;
-      return {
-        query: input,
-        results: [],
-        total: 0,
-        truncated: false,
-        error:
-          `GitHub's public search limit resets in ${wait}s. ` +
-          `Add a read-only token for a higher limit, or keep browsing the local index.`,
-      };
-    }
-    if (!res.ok) {
-      return {
-        query: input,
-        results: [],
-        total: 0,
-        truncated: false,
-        error: `GitHub search failed (HTTP ${res.status}).`,
-      };
-    }
-
-    const body = await res.json();
-    const items = Array.isArray(body.items) ? body.items : [];
-    const total = Number(body.total_count) || 0;
-
-    // has_pages is a field on each item, not a usable qualifier, so filter here.
-    const results = items
-      .filter((r) => r && r.has_pages)
-      .map((r) => ({
-        full_name: r.full_name,
-        owner: (r.owner && r.owner.login) || String(r.full_name).split("/")[0],
-        repo: r.name,
-        url: pagesUrlFor((r.owner && r.owner.login) || "", r.name, r.homepage || null),
-        description: r.description || null,
-        topics: Array.isArray(r.topics) ? r.topics : [],
-        stars: Number(r.stargazers_count) || 0,
-      }));
-
-    return { query: input, results, total, truncated: total >= RESULT_CAP };
-  } catch (err) {
-    if (err && err.name === "AbortError") throw err;
-    return {
-      query: input,
-      results: [],
-      total: 0,
-      truncated: false,
-      error: `Could not reach GitHub (${String(err).slice(0, 80)}).`,
-    };
+  if (res.status === 403 || res.status === 429) {
+    return { kind: "rate-limited", wait: resetSeconds(res) };
   }
+  if (!res.ok) return { kind: "error", message: `GitHub search failed (HTTP ${res.status}).` };
+
+  const body = await res.json();
+  return {
+    kind: "ok",
+    total: Number(body.total_count) || 0,
+    items: Array.isArray(body.items) ? body.items : [],
+  };
+}
+
+/**
+ * Search GitHub for Pages-enabled repositories.
+ *
+ * Pages are fetched sequentially rather than in parallel: the rate limit is a
+ * fixed budget per minute, so firing page 4 alongside page 1 would not make it
+ * finish sooner, it would just spend the budget faster and make the *next*
+ * search fail sooner.
+ *
+ * @param {string} input free text from the user
+ * @param {{token?: string, signal?: AbortSignal, pages?: number}} [opts]
+ * @returns {Promise<{query:string, results:Array, total:number, truncated:boolean,
+ *                    pagesFetched:number, hasMore:boolean, partial?:string, error?:string}>}
+ */
+export async function searchGitHub(input, opts = {}) {
+  const q = buildQuery(input);
+  const empty = {
+    query: input,
+    results: [],
+    total: 0,
+    truncated: false,
+    pagesFetched: 0,
+    hasMore: false,
+  };
+  if (!q) return empty;
+
+  const wantPages = Math.max(1, Math.min(MAX_PAGES, opts.pages ?? 1));
+  const seen = new Set();
+  const results = [];
+  let total = 0;
+  let pagesFetched = 0;
+  let partial = null;
+
+  for (let page = 1; page <= wantPages; page++) {
+    let res;
+    try {
+      res = await fetchPage(input, page, opts);
+    } catch (err) {
+      if (err && err.name === "AbortError") throw err;
+      partial = results.length
+        ? `Stopped early: could not reach GitHub (${String(err).slice(0, 60)}).`
+        : `Could not reach GitHub (${String(err).slice(0, 60)}).`;
+      break;
+    }
+
+    if (res.kind === "rate-limited") {
+      partial = results.length
+        ? `GitHub's public search limit resets in ${res.wait}s. Showing what loaded before the limit.`
+        : `GitHub's public search limit resets in ${res.wait}s. ` +
+          `Add a read-only token for a higher limit, or keep browsing the local index.`;
+      break;
+    }
+    if (res.kind === "error") {
+      partial = results.length ? `${res.message} Showing earlier pages.` : res.message;
+      break;
+    }
+
+    total = res.total;
+    pagesFetched++;
+    const before = results.length;
+    for (const item of res.items) {
+      const row = toResult(item);
+      if (!row || seen.has(row.full_name)) continue;
+      seen.add(row.full_name);
+      results.push(row);
+    }
+    // An empty page means the result set is exhausted; asking for more would
+    // burn rate limit for nothing.
+    if (res.items.length === 0 || results.length === before) break;
+    if (page < wantPages && total <= page * PER_PAGE) break;
+  }
+
+  results.sort(byPopularity);
+
+  return {
+    query: input,
+    results,
+    total,
+    truncated: total >= RESULT_CAP,
+    pagesFetched,
+    hasMore: pagesFetched < MAX_PAGES && total > results.length,
+    partial: partial ?? undefined,
+    ...(results.length === 0 && partial && !partial.startsWith("Showing") && !partial.startsWith("Stopped")
+      ? { error: partial }
+      : {}),
+  };
 }

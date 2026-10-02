@@ -20,6 +20,14 @@ const eq = (name: string, got: string, want: string) => {
     fail++;
   }
 };
+const check = (name: string, ok: boolean | string, detail = "") => {
+  const pass = ok === true || ok === "ok";
+  console.log(`  ${pass ? "PASS" : "FAIL"}  ${name}`);
+  if (!pass) {
+    if (detail) console.log(`        ${detail}`);
+    fail++;
+  }
+};
 
 console.log("=== URL resolution matches the crawler (core.ts) ===");
 eq("apex when repo is <owner>.github.io",
@@ -50,6 +58,149 @@ eq("quotes in input are stripped", buildQueryForTest('we"ird'),
   "weird in:name,description,readme");
 eq("empty input yields empty query", buildQueryForTest("   "), "");
 eq("backslashes stripped", buildQueryForTest("a\\b"), "ab in:name,description,readme");
+
+/**
+ * Pagination is the feature that makes niche sites findable: before it, one
+ * call of per_page=30 yielded ~8 Pages sites per query. These pin the pure
+ * logic with fetch stubbed, so they never spend rate limit.
+ */
+console.log("=== pagination and ranking (fetch stubbed) ===");
+
+const realFetch = globalThis.fetch;
+
+/** Build an API item; `pages` toggles the has_pages flag. */
+const item = (fullName: string, stars: number, pages = true) => {
+  const [owner, repo] = fullName.split("/");
+  return {
+    full_name: fullName,
+    name: repo,
+    owner: { login: owner },
+    stargazers_count: stars,
+    has_pages: pages,
+    description: "d",
+    topics: ["t"],
+    homepage: null,
+  };
+};
+
+type Call = { url: string };
+
+/**
+ * Stub fetch to serve `perPage` items per page from a pool, so the test can
+ * assert how many requests a given `pages` argument costs.
+ */
+function stubPool(pool: unknown[], total: number, perPage = 100) {
+  const calls: Call[] = [];
+  globalThis.fetch = (async (url: string) => {
+    calls.push({ url });
+    const page = Number(new URL(url).searchParams.get("page") ?? "1");
+    const start = (page - 1) * perPage;
+    const items = pool.slice(start, start + perPage);
+    return new Response(JSON.stringify({ total_count: total, items }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  return calls;
+}
+
+const { searchGitHub, MAX_PAGES_FOR_TEST } = await import("../../src/site/github-search.js");
+
+// A pool of 250 Pages items plus non-Pages noise, which must be filtered out.
+const pool: unknown[] = [];
+for (let i = 0; i < 250; i++) pool.push(item(`owner${i}/repo${i}`, 500 - i));
+for (let i = 0; i < 50; i++) pool.push(item(`nope${i}/lib${i}`, 10000, false));
+
+{
+  const calls = stubPool(pool, 7354);
+  const r = await searchGitHub("portfolio", { pages: 3 });
+  globalThis.fetch = realFetch;
+
+  eq("one page requests exactly one call", String(calls.length), "3");
+  check("pages requested are 1..3",
+    [1, 2, 3].every((p) => calls.some((c) => c.url.includes(`page=${p}`))));
+  check("per_page is 100, not 30", calls.every((c) => c.url.includes("per_page=100")));
+  check("sorted by stars, descending",
+    r.results.every((x, i, a) => i === 0 || a[i - 1].stars >= x.stars));
+  check("has_pages=false rows are dropped",
+    r.results.every((x) => !x.full_name.startsWith("nope")));
+  check("pagesFetched matches requests", r.pagesFetched === 3 ? "ok" : `got ${r.pagesFetched}`);
+  check("hasMore is true when GitHub has more",
+    r.hasMore ? "ok" : "got false");
+}
+
+{
+  // Fewer pages than the result set: still one call per page requested.
+  const calls = stubPool(pool, 7354);
+  const r = await searchGitHub("portfolio", { pages: 1 });
+  globalThis.fetch = realFetch;
+  eq("pages=1 costs one call", String(calls.length), "1");
+  check("one page returns ~100 rows", r.results.length === 100 ? "ok" : `got ${r.results.length}`);
+}
+
+{
+  // A short result set must not keep asking: stop as soon as GitHub is exhausted.
+  const small = [item("a/one", 5), item("a/two", 4)];
+  const calls = stubPool(small, 2);
+  const r = await searchGitHub("nothing", { pages: 10 });
+  globalThis.fetch = realFetch;
+  check("stops early on a short result set", calls.length === 1 ? "ok" : `made ${calls.length} calls`);
+  check("hasMore false when everything is loaded", r.hasMore ? "got true" : "ok");
+}
+
+{
+  // Rate limiting mid-pagination must keep earlier pages instead of losing all.
+  const calls: Call[] = [];
+  let n = 0;
+  globalThis.fetch = (async (url: string) => {
+    calls.push({ url });
+    n++;
+    if (n === 1) {
+      const page = Number(new URL(url).searchParams.get("page") ?? "1");
+      return new Response(
+        JSON.stringify({ total_count: 5000, items: pool.slice(0, 100) }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    const reset = Math.floor(Date.now() / 1000) + 42;
+    return new Response("rate limited", {
+      status: 403,
+      headers: { "x-ratelimit-reset": String(reset) },
+    });
+  }) as typeof fetch;
+
+  const r = await searchGitHub("portfolio", { pages: 5 });
+  globalThis.fetch = realFetch;
+  check("rate limit keeps earlier pages", r.results.length === 100 ? "ok" : `got ${r.results.length}`);
+  check("rate limit reports a partial, not a hard error",
+    r.partial ? "ok" : "no partial set");
+  check("rate limit is not treated as fatal", r.error ? `error: ${r.error}` : "ok");
+}
+
+{
+  // A pool that never runs out, so the clamp is what stops pagination rather
+  // than a short result set. A finite pool empties on page 4 and would make
+  // this assertion pass for the wrong reason.
+  const calls: Call[] = [];
+  globalThis.fetch = (async (url: string) => {
+    calls.push({ url });
+    const page = Number(new URL(url).searchParams.get("page") ?? "1");
+    const items = Array.from({ length: 100 }, (_, i) =>
+      item(`gen${page}/repo${i}`, 1000 - i),
+    );
+    return new Response(JSON.stringify({ total_count: 999999, items }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const r = await searchGitHub("portfolio", { pages: 99 });
+  globalThis.fetch = realFetch;
+  check("pages argument is clamped to 10",
+    calls.length === MAX_PAGES_FOR_TEST, `made ${calls.length} calls, max ${MAX_PAGES_FOR_TEST}`);
+  check("never requests page 11", !calls.some((c) => c.url.includes("page=11")) ? "ok" : "requested page 11");
+  check("truncated flag set at the 1,000 cap", r.truncated ? "ok" : "got false");
+}
 
 console.log(`\n${fail === 0 ? "ON-DEMAND SEARCH OK" : `${fail} CHECK(S) FAILED`}`);
 process.exit(fail === 0 ? 0 : 1);
