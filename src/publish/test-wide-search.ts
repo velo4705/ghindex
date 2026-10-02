@@ -298,15 +298,44 @@ const withEdge = (content: string) => {
   delete (globalThis as any).document;
   eq("no edge means no liveness claim", String(await verifyLiveness("https://x.github.io/")), "null");
 
+  const probe = (body: unknown, status = 200) => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), { status })) as typeof fetch;
+  };
+
   withEdge("https://edge.example");
-  globalThis.fetch = (async () => new Response(JSON.stringify({ alive: true, status: 200 }), { status: 200 })) as typeof fetch;
+
+  probe({ alive: true, status: 200, verdict: "alive" });
   const alive = await verifyLiveness("https://x.github.io/");
+  check("edge reports alive", alive?.alive === true);
+  eq("verdict passes through", alive?.verdict, "alive");
+
+  // The distinction that matters: a bot filter is not a dead site, and showing
+  // it as one would libel a working site that is often highly starred.
+  probe({ alive: false, status: 403, verdict: "blocked" });
+  const blocked = await verifyLiveness("https://x.github.io/");
+  eq("a refused request is blocked, not gone", blocked?.verdict, "blocked");
+  check("and not reported as dead", blocked?.alive === false);
+
+  probe({ alive: false, status: 404, verdict: "gone" });
+  const gone = await verifyLiveness("https://x.github.io/");
+  eq("404 is gone", gone?.verdict, "gone");
+
+  probe({ alive: false, status: 0, verdict: "unreachable" });
+  eq("no response is unreachable", (await verifyLiveness("https://x.github.io/"))?.verdict, "unreachable");
+
+  // A legacy response with no verdict must still yield something renderable,
+  // rather than an undefined class name in the UI.
+  probe({ alive: true, status: 200 });
+  const legacy = await verifyLiveness("https://x.github.io/");
+  check("missing verdict degrades safely", legacy?.verdict === null || legacy?.verdict === undefined,
+    String(legacy?.verdict));
+
   globalThis.fetch = (async () => { throw new Error("network down"); }) as typeof fetch;
   const down = await verifyLiveness("https://x.github.io/");
   globalThis.fetch = realFetch;
   delete (globalThis as any).document;
 
-  check("edge reports alive", alive?.alive === true);
   check("an unreachable edge is not 'dead'", down === null ? "ok" : `got ${JSON.stringify(down)}`);
 }
 
