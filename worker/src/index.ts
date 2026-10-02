@@ -62,8 +62,18 @@ const HARD_TTL_SECONDS = 3600;
  */
 const SOFT_TTL_SECONDS = 600;
 
-const LIVENESS_TTL_ALIVE = 86400;
-const LIVENESS_TTL_DEAD = 3600;
+const LIVENESS_TTL_ALIVE = 21600;
+const LIVENESS_TTL_GONE = 1800;
+const LIVENESS_TTL_OTHER = 3600;
+
+/** How long a verdict stays trustworthy. Asymmetric on purpose. */
+function livenessTtl(verdict: unknown): number {
+  if (verdict === "alive") return LIVENESS_TTL_ALIVE;
+  // "Gone" is cached briefly: sites come back, and a stale "dead" badge is the
+  // most damaging kind of wrong answer this index can give.
+  if (verdict === "gone") return LIVENESS_TTL_GONE;
+  return LIVENESS_TTL_OTHER;
+}
 
 /**
  * Tier-1 cache: this isolate's own memory.
@@ -408,12 +418,31 @@ async function handleLive(
   const out = new Response(JSON.stringify(result), {
     headers: {
       ...JSON_HEADERS,
-      "cache-control": `public, max-age=${result.alive ? LIVENESS_TTL_ALIVE : LIVENESS_TTL_DEAD}`,
+      "cache-control": `public, max-age=${livenessTtl(result.verdict)}`,
       "x-cache": "MISS",
     },
   });
   if (cache) ctx?.waitUntil(cache.put(new Request(key), out.clone()));
   return out;
+}
+
+/**
+ * Classify an HTTP status into a verdict a human can act on.
+ *
+ * A flat `alive: false` would be actively misleading, because a GitHub Pages
+ * site behind a bot filter or Cloudflare returns 403 or 429 to a HEAD request
+ * while serving perfectly well in a browser. Reporting those as "dead" would
+ * libel working sites, and since the results are sorted by stars those are often
+ * the prominent ones. So "could not reach it" and "refused the request" are
+ * kept distinct from "is not there".
+ */
+function verdictFor(status: number): string {
+  if (status >= 200 && status < 400) return "alive";
+  // 410 Gone is the other unambiguous "this will never be here again".
+  if (status === 404 || status === 410) return "gone";
+  // Refused, not absent. The site may well be fine.
+  if (status === 401 || status === 403 || status === 429) return "blocked";
+  return "error";
 }
 
 /**
@@ -431,7 +460,13 @@ async function probe(target: string): Promise<Record<string, unknown>> {
         method,
         redirect: "follow",
         signal: AbortSignal.timeout(6000),
-        headers: method === "GET" ? { Range: "bytes=0-0" } : {},
+        headers: {
+          // Identify honestly. Guessing a browser UA would make sites look
+          // reachable when a real visitor's browser gets a different answer,
+          // which is the opposite of useful.
+          "User-Agent": "ghindex-linkcheck (+https://velo4705.github.io/ghindex/)",
+          ...(method === "GET" ? { Range: "bytes=0-0" } : {}),
+        },
       });
     } catch (err) {
       return { failed: String(err) } as unknown as Response;
@@ -440,20 +475,29 @@ async function probe(target: string): Promise<Record<string, unknown>> {
 
   let res = await attempt("HEAD");
   let fellBack = false;
-  const unusable =
-    res instanceof Response && (res.status === 405 || res.status === 501);
+  const unusable = res instanceof Response && (res.status === 405 || res.status === 501);
   if (unusable) {
     fellBack = true;
     res = await attempt("GET");
   }
 
   if (!(res instanceof Response)) {
-    return { url: target, alive: false, status: 0, error: "unreachable", checkedAt };
+    return {
+      url: target,
+      alive: false,
+      status: 0,
+      verdict: "unreachable",
+      detail: "no response",
+      checkedAt,
+    };
   }
+  const verdict = verdictFor(res.status);
   return {
     url: target,
-    alive: res.ok,
+    // Kept for backwards compatibility: `alive` is strictly "served content".
+    alive: verdict === "alive",
     status: res.status,
+    verdict,
     viaHead: !fellBack,
     checkedAt,
   };

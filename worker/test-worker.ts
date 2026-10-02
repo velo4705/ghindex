@@ -514,6 +514,61 @@ stubGithub(() => {
     anonBody._cache.recovered === undefined && anonBody._cache.authed === false, JSON.stringify(anonBody._cache));
 }
 
+console.log("=== verdicts distinguish dead from merely unfriendly ===");
+{
+  // Status -> expected verdict, including the cases a flat alive/dead flag
+  // would get wrong.
+  const cases: Array<[number, string]> = [
+    [200, "alive"],
+    [204, "alive"],
+    [301, "alive"],
+    [404, "gone"],
+    [410, "gone"],
+    [403, "blocked"],   // bot filter or Cloudflare: the site may be fine
+    [429, "blocked"],
+    [401, "blocked"],
+    [500, "error"],
+    [503, "error"],
+  ];
+  for (const [status, want] of cases) {
+    let got = "";
+    let alive: boolean | null = null;
+    globalThis.fetch = (async () => new Response(null, { status })) as typeof fetch;
+    const res = await call("/api/live?u=https://verdict-user.github.io/", {}, null, null);
+    const body = (await res.json()) as any;
+    got = body.verdict;
+    alive = body.alive;
+    eq(`HTTP ${status} -> ${want}`, got, want);
+    if (want === "alive") {
+      eq(`HTTP ${status} sets alive`, String(alive), "true");
+    } else {
+      eq(`HTTP ${status} does not claim alive`, String(alive), "false");
+    }
+  }
+
+  // A blocked site must not be cached for as long as a live one.
+  globalThis.fetch = (async () => new Response(null, { status: 200 })) as typeof fetch;
+  const live = await call("/api/live?u=https://ttl-user.github.io/", {}, null, null);
+  const liveMax = Number((live.headers.get("cache-control") ?? "").match(/max-age=(\d+)/)?.[1]);
+  globalThis.fetch = (async () => new Response(null, { status: 404 })) as typeof fetch;
+  const dead = await call("/api/live?u=https://ttl2-user.github.io/", {}, null, null);
+  const deadMax = Number((dead.headers.get("cache-control") ?? "").match(/max-age=(\d+)/)?.[1]);
+  globalThis.fetch = (async () => new Response(null, { status: 403 })) as typeof fetch;
+  const blocked = await call("/api/live?u=https://ttl3-user.github.io/", {}, null, null);
+  const blockedMax = Number((blocked.headers.get("cache-control") ?? "").match(/max-age=(\d+)/)?.[1]);
+  check("live is cached longest", liveMax > blockedMax && liveMax > deadMax, `live=${liveMax} gone=${deadMax} blocked=${blockedMax}`);
+  check("gone is cached briefly, since sites return", deadMax < liveMax, `gone=${deadMax} live=${liveMax}`);
+}
+
+{
+  // A host that does not resolve must be 'unreachable', not 'gone'.
+  globalThis.fetch = (async () => { throw new Error("getaddrinfo ENOTFOUND"); }) as typeof fetch;
+  const res = await call("/api/live?u=https://nope-nobody.github.io/", {}, null, null);
+  const body = (await res.json()) as any;
+  eq("DNS failure is unreachable", String(body.verdict), "unreachable");
+  eq("and not reported as gone", String(body.status), "0");
+}
+
 globalThis.fetch = realFetch;
 
 console.log(`\n${fail === 0 ? "WORKER OK" : `${fail} CHECK(S) FAILED`}`);

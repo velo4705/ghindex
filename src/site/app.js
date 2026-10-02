@@ -181,6 +181,17 @@ const wide = {
   partial: null,
   error: null,
   loading: false,
+  /**
+   * Liveness verdicts, keyed by site URL.
+   *
+   * The local index is verified by the offline probe, but these results come
+   * straight from GitHub, where `has_pages` is a repository setting that can be
+   * weeks out of date with reality. A repo can have Pages switched on and serve
+   * nothing at the derived URL, which is exactly what happens when the project
+   * moved to a custom domain.
+   */
+  live: new Map(),
+  verifyToken: 0,
 };
 
 /** Pages loaded per click. One page = 100 repos = ~35 Pages sites. */
@@ -188,6 +199,18 @@ const WIDE_PAGE_STEP = 1;
 
 /** Debounce before asking GitHub, so typing does not spend the rate limit. */
 const WIDE_DEBOUNCE_MS = 700;
+
+/**
+ * How many on-demand results to liveness-check, and how many at a time.
+ *
+ * Each check is a Worker invocation that makes a real request to someone else's
+ * site, so this is capped rather than exhaustive: it covers the top results on
+ * screen, which are the ones anyone is likely to click. Sequential in small
+ * batches so a page of 80 results does not open 80 simultaneous connections to
+ * unrelated hosts.
+ */
+const LIVE_CHECK_LIMIT = 24;
+const LIVE_CHECK_CONCURRENCY = 5;
 
 async function runWideSearch(opts = {}) {
   const q = $("q").value.trim();
@@ -255,7 +278,17 @@ async function runWideSearch(opts = {}) {
   wide.hasMore = res.hasMore;
   wide.partial = res.partial ?? null;
   wide.error = res.error ?? null;
+
+  // Verdicts are kept across queries on purpose: a URL that resolved five
+  // minutes ago will very likely resolve now, and re-checking it would spend
+  // another Worker request for no new information. Bounded so a long session
+  // cannot grow it without limit.
+  if (wide.live.size > 200) wide.live.clear();
+
   renderWide();
+  // Liveness is a follow-up, not part of the search: the list appears first and
+  // gains badges as answers arrive, so a slow site never delays results.
+  if (!wide.error) verifyWideResults();
 }
 
 /** Drop every on-demand result; used when the query box is cleared. */
@@ -273,8 +306,34 @@ function resetWide() {
   wide.error = null;
 }
 
+const LIVE_BADGES = {
+  checking: { cls: "live-checking", text: "checking…" },
+  alive: { cls: "live-alive", text: "live" },
+  gone: { cls: "live-gone", text: "dead link" },
+  blocked: { cls: "live-blocked", text: "blocks bots" },
+  unreachable: { cls: "live-gone", text: "unreachable" },
+  error: { cls: "live-unknown", text: "unverified" },
+};
+
+function livePillHtml(url) {
+  const v = wide.live.get(url);
+  const badge = LIVE_BADGES[v];
+  if (!badge) return "";
+  const why =
+    v === "blocked"
+      ? "This site refused an automated request. It may still work in a browser."
+      : v === "gone"
+        ? "The site did not answer. The repo says Pages is on, but nothing is served here."
+        : v === "unreachable"
+          ? "The host did not respond."
+          : v === "alive"
+            ? "Checked just now and responding."
+            : "";
+  return `<span class="pill ${badge.cls}"${why ? ` title="${esc(why)}"` : ""}>${esc(badge.text)}</span>`;
+}
+
 function wideRowHtml(r) {
-  const href = safeUrl(r.url);
+  const href = r.url;
   if (!href) return "";
   const title = r.full_name || `${r.owner}/${r.repo}`;
   const tags = (r.topics ?? [])
@@ -285,13 +344,107 @@ function wideRowHtml(r) {
   const starBadge = stars
     ? `<span class="pill stars" title="${stars.toLocaleString()} GitHub stars">★ ${stars.toLocaleString()}</span>`
     : "";
-  return `<article class="row">
+  // data-live lets a finished check patch its own row instead of re-rendering
+  // the list, which would otherwise move the page under the reader.
+  return `<article class="row" data-live="${esc(href)}">
     <h3><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>
-      ${starBadge}<span class="pill">not indexed</span></h3>
+      ${livePillHtml(href)}${starBadge}<span class="pill">not indexed</span></h3>
     <div class="url">${esc(href)}</div>
     ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
     <div class="tags">${tags}</div>
   </article>`;
+}
+
+/**
+ * Liveness-check the on-demand results, then patch each row as its answer lands.
+ *
+ * Deliberately not awaited by the search: results appear immediately and are
+ * annotated afterwards, so a slow or unreachable site never delays the list.
+ * Rows that are confirmed gone are dimmed rather than removed, because a
+ * transient failure should not hide a result, and a dead link is still a fact
+ * the reader may want to see.
+ */
+async function verifyWideResults() {
+  const { verifyLiveness, edgeEndpoint } = await import("./github-search.js");
+
+  /**
+   * With no edge configured there is nothing to ask: a browser cannot make this
+   * check at all, because a cross-origin HEAD returns an opaque response. Skip
+   * it entirely rather than stamping "unverified" on every row, which would be
+   * both noise and a worse reading experience than the plain note.
+   */
+  if (!edgeEndpoint()) return;
+
+  const token = ++wide.verifyToken;
+
+  const pending = wide.results
+    .map((r) => r.url)
+    .filter((u) => u && !wide.live.has(u))
+    .slice(0, LIVE_CHECK_LIMIT);
+  if (!pending.length) return;
+
+  // Marking first means a row renders as "checking…" immediately instead of
+  // looking unverified while the request is in flight.
+  for (const u of pending) wide.live.set(u, "checking");
+  paintLiveRows();
+
+  const queue = pending.slice();
+  const worker = async () => {
+    while (queue.length) {
+      const url = queue.shift();
+      // A newer search has taken over; stop annotating rows that are gone.
+      if (token !== wide.verifyToken) return;
+      let res;
+      try {
+        res = await verifyLiveness(url);
+      } catch {
+        res = null;
+      }
+      if (token !== wide.verifyToken) return;
+      wide.live.set(url, res?.verdict ?? "error");
+      paintLiveRows();
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(LIVE_CHECK_CONCURRENCY, queue.length) }, worker),
+  );
+}
+
+/**
+ * Update just the rows whose verdict changed, instead of re-rendering the whole
+ * section. Re-rendering would discard focus and scroll position mid-read, and
+ * the list can be long.
+ */
+function paintLiveRows() {
+  for (const row of document.querySelectorAll("#wide-results [data-live]")) {
+    const url = row.getAttribute("data-live");
+    const v = wide.live.get(url);
+    if (!v) continue;
+    const badge = LIVE_BADGES[v];
+    row.classList.toggle("is-gone", v === "gone" || v === "unreachable");
+    let pill = row.querySelector(".pill.live-alive, .pill.live-gone, .pill.live-blocked, .pill.live-unknown, .pill.live-checking");
+    if (!pill) {
+      const host = row.querySelector("h3");
+      if (!host) continue;
+      pill = document.createElement("span");
+      const idx = host.querySelector(".pill");
+      host.insertBefore(pill, idx ?? null);
+    }
+      pill.className = `pill ${badge.cls}`;
+    pill.textContent = badge.text;
+    const why =
+      v === "blocked"
+        ? "This site refused an automated request. It may still work in a browser."
+        : v === "gone"
+          ? "The site did not answer. The repo says Pages is on, but nothing is served here."
+          : v === "unreachable"
+            ? "The host did not respond."
+            : v === "alive"
+              ? "Checked just now and responding."
+              : "";
+    if (why) pill.setAttribute("title", why);
+    else pill.removeAttribute("title");
+  }
 }
 
 /**
@@ -337,7 +490,16 @@ function renderWide(statusText) {
   }
   if (wide.pages) bits.push(`${wide.pages} of up to 10 pages loaded`);
   if (wide.partial) bits.push(wide.partial);
-  bits.push("Outside this index, so not checked for liveness.");
+  // The index below is verified offline. These come from GitHub, where
+  // `has_pages` is a repository setting that can be weeks stale, so each one is
+  // link-checked separately and badged with what was actually found.
+  const checked = [...wide.live.values()].filter((v) => v !== "checking").length;
+  bits.push(
+    checked
+      ? `Each result is link-checked as you see it. ${checked} checked; ` +
+          `"blocks bots" means it refused an automated request, not that it is down.`
+      : "Outside this index, so each result is link-checked separately.",
+  );
 
   const more =
     wide.hasMore || wide.loading

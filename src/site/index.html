@@ -502,6 +502,17 @@
     color: var(--star, #b8860b);
     font-variant-numeric: tabular-nums;
   }
+  /* Liveness verdicts. Deliberately toned down: a dead link is worth flagging,
+     but it is not a dramatic event, and the site may come back. */
+  .pill.live-checking { opacity: .55; font-style: italic; }
+  .pill.live-alive { color: #1a7f4b; border-color: #1a7f4b; }
+  .pill.live-blocked { color: #8a6d1f; border-color: #b8932f; }
+  .pill.live-gone { color: #a33; border-color: #a33; }
+  .pill.live-unknown { opacity: .7; }
+  /* Dim a confirmed dead row rather than removing it: the reader may still want
+     to see that the repo claims Pages is on while nothing is served. */
+  .wide .row.is-gone { opacity: .55; }
+  .wide .row.is-gone .url { text-decoration: line-through; text-decoration-thickness: 1px; }
   .pill {
     display: inline-block;
     font-size: .62rem;
