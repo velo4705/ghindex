@@ -19,11 +19,12 @@
     "test": "bun run src/index/test-urls.ts && bun run src/classify/test.ts && bun run src/publish/test-search.ts",
     "test:pages": "bun run src/publish/test-pages.ts",
     "test:wide": "bun run src/publish/test-wide-search.ts",
+    "test:worker": "bun run worker/test-worker.ts",
     "test:wide-browser": "bun run m6/verify-wide.ts",
     "test:browser": "bun run src/quality/verify-browser.ts",
     "test:anomaly": "bun run src/quality/test-anomaly.ts",
     "test:ci-compat": "bun run src/quality/test-ci-compat.ts",
     "test:idempotent": "bun run src/publish/test-idempotent.ts",
-    "test:all": "bun run test && bun run test:wide && bun run test:anomaly && bun run test:ci-compat && bun run test:idempotent && bun run test:pages && bun run health && bun run perf && bun run test:browser"
+    "test:all": "bun run test && bun run test:wide && bun run test:worker && bun run test:anomaly && bun run test:ci-compat && bun run test:idempotent && bun run test:pages && bun run health && bun run perf && bun run test:browser"
   }
 }

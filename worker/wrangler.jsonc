@@ -1,0 +1,23 @@
+{
+  // Worker config for the ghindex edge search API.
+  //
+  // This cannot sit in front of *.github.io: that domain is served by GitHub,
+  // so Cloudflare never sees the request and cannot intercept it. Until the
+  // project moves off GitHub Pages onto its own domain, the worker is reached
+  // at its workers.dev hostname and called cross-origin from the page.
+  //
+  // The token is NOT in this file and must never be. Set it with:
+  //   bunx wrangler secret put GITHUB_TOKEN
+  // It exists only in the deployed worker's environment, and /api/health
+  // reports merely whether one is present.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ghindex-search",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  // Off explicitly. This worker holds a GitHub secret, and there is no reason to
+  // hand out additional unguessable entry points to it.
+  "preview_urls": false,
+  // Public search data only; no credentials, no per-user state.
+  "observability": { "enabled": true }
+}

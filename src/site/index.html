@@ -9,6 +9,22 @@
 <meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
 <title>ghindex — index of GitHub Pages sites</title>
+<!--
+  Optional edge search worker. Leave empty to talk to GitHub directly, which is
+  the correct default: this project is served from *.github.io, a domain
+  Cloudflare cannot sit in front of, so the worker runs on its own hostname and
+  is called cross-origin.
+
+  When it is deployed, put its URL here, e.g.
+    <meta name="ghindex-edge" content="https://ghindex-search.<sub>.workers.dev">
+
+  With it set, searches go through a server-side cache that holds the GitHub
+  token, so repeat queries cost no rate limit and real-time results can be
+  liveness-checked. With it empty or unreachable, search falls back to GitHub
+  using each visitor's own IP budget. Nothing here is required for search to
+  work.
+-->
+<meta name="ghindex-edge" content="" />
 <style>
   /* ---------------------------------------------------------------------
      Design tokens. One scale for colour, radius, shadow and motion so the

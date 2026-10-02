@@ -202,5 +202,113 @@ for (let i = 0; i < 50; i++) pool.push(item(`nope${i}/lib${i}`, 10000, false));
   check("truncated flag set at the 1,000 cap", r.truncated ? "ok" : "got false");
 }
 
+console.log("=== edge worker routing ===");
+
+/** Minimal DOM stand-in: github-search.js reads the endpoint from a meta tag. */
+const withEdge = (content: string) => {
+  (globalThis as any).document = {
+    querySelector: (sel: string) =>
+      sel === 'meta[name="ghindex-edge"]' ? { getAttribute: () => content } : null,
+  };
+};
+
+{
+  const { edgeEndpoint } = await import("../../src/site/github-search.js");
+  delete (globalThis as any).document;
+  eq("no DOM means no edge", String(edgeEndpoint()), "null");
+
+  withEdge("");
+  eq("empty meta means no edge", String(edgeEndpoint()), "null");
+  withEdge("http://insecure.example");
+  eq("non-https edge is refused", String(edgeEndpoint()), "null");
+  withEdge("https://edge.example/");
+  eq("trailing slash is trimmed", String(edgeEndpoint()), "https://edge.example");
+  withEdge("https://edge.example/api");
+  check("a path is preserved", edgeEndpoint()!.endsWith("/api"));
+  delete (globalThis as any).document;
+}
+
+{
+  // The worker appends `in:name,description,readme` itself, so the client must
+  // send raw text. Sending the pre-built query would duplicate the qualifier.
+  withEdge("https://edge.example");
+  const urls: string[] = [];
+  globalThis.fetch = (async (url: string) => {
+    urls.push(String(url));
+    return new Response(JSON.stringify({ total_count: 1, items: [item("a/b", 1)] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  await searchGitHub("expense tracker", { pages: 1, token: "visitor-token" });
+  globalThis.fetch = realFetch;
+  delete (globalThis as any).document;
+
+  check("requests go to the edge", urls.every((u) => u.startsWith("https://edge.example/api/search")), urls[0]);
+  check("edge gets the raw text", urls[0].includes("q=expense%20tracker"), urls[0]);
+  check("edge does not get the built query",
+    !urls[0].includes("in%3Aname"), urls[0]);
+}
+
+{
+  // A worker that is down must not take search down with it.
+  withEdge("https://edge.example");
+  const urls: string[] = [];
+  globalThis.fetch = (async (url: string) => {
+    urls.push(String(url));
+    if (String(url).startsWith("https://edge.example")) return new Response("boom", { status: 503 });
+    return new Response(JSON.stringify({ total_count: 1, items: [item("a/b", 7)] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const r = await searchGitHub("portfolio", { pages: 1 });
+  globalThis.fetch = realFetch;
+  delete (globalThis as any).document;
+
+  check("edge is tried first", urls[0].startsWith("https://edge.example"), urls[0]);
+  check("falls back to GitHub on a 5xx", urls.some((u) => u.includes("api.github.com")), urls.join(" "));
+  check("and still returns results", r.results.length === 1 ? "ok" : `got ${r.results.length}`);
+}
+
+{
+  // A 403 from the edge is the worker's own rate limit, not an outage, so it
+  // must NOT silently fall back: that would burn the visitor's IP budget.
+  withEdge("https://edge.example");
+  const urls: string[] = [];
+  globalThis.fetch = (async (url: string) => {
+    urls.push(String(url));
+    return new Response(JSON.stringify({ error: "rate-limited", wait: 30 }), { status: 403 });
+  }) as typeof fetch;
+
+  const r = await searchGitHub("portfolio", { pages: 1 });
+  globalThis.fetch = realFetch;
+  delete (globalThis as any).document;
+
+  eq("no fallback on 403", String(urls.length), "1");
+  check("rate limit is reported", typeof r.partial === "string", String(r.partial));
+}
+
+{
+  // Liveness cannot be checked without a server; it must return null, never
+  // claim a site is dead.
+  const { verifyLiveness } = await import("../../src/site/github-search.js");
+  delete (globalThis as any).document;
+  eq("no edge means no liveness claim", String(await verifyLiveness("https://x.github.io/")), "null");
+
+  withEdge("https://edge.example");
+  globalThis.fetch = (async () => new Response(JSON.stringify({ alive: true, status: 200 }), { status: 200 })) as typeof fetch;
+  const alive = await verifyLiveness("https://x.github.io/");
+  globalThis.fetch = (async () => { throw new Error("network down"); }) as typeof fetch;
+  const down = await verifyLiveness("https://x.github.io/");
+  globalThis.fetch = realFetch;
+  delete (globalThis as any).document;
+
+  check("edge reports alive", alive?.alive === true);
+  check("an unreachable edge is not 'dead'", down === null ? "ok" : `got ${JSON.stringify(down)}`);
+}
+
 console.log(`\n${fail === 0 ? "ON-DEMAND SEARCH OK" : `${fail} CHECK(S) FAILED`}`);
 process.exit(fail === 0 ? 0 : 1);

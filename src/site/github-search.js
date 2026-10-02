@@ -53,6 +53,28 @@ const MAX_PAGES = 10;
 const API = "https://api.github.com/search/repositories";
 
 /**
+ * The optional edge worker, read from a meta tag so hosting can change without
+ * touching this file.
+ *
+ * Why it is optional rather than hard-coded
+ * ----------------------------------------
+ * This project is served from *.github.io, which Cloudflare cannot sit in front
+ * of, so the worker necessarily lives on its own hostname and is called
+ * cross-origin. Until that hostname exists there is nothing to call, so the
+ * direct path has to stay fully working on its own: if the meta tag is absent,
+ * or the worker is unreachable, this module quietly talks to GitHub itself.
+ */
+const EDGE_META = "ghindex-edge";
+
+/** The configured edge endpoint, or null when there is none. */
+export function edgeEndpoint() {
+  if (typeof document === "undefined") return null;
+  const el = document.querySelector(`meta[name="${EDGE_META}"]`);
+  const url = el && el.getAttribute("content");
+  return url && /^https:\/\//.test(url) ? url.replace(/\/+$/, "") : null;
+}
+
+/**
  * Resolve a Pages URL for a repository.
  *
  * Mirrors pagesUrlFor() in src/index/core.ts: only a repo literally named
@@ -144,24 +166,58 @@ function resetSeconds(res) {
 }
 
 /**
+ * Build the request for one page of results.
+ *
+ * Two shapes, because the two upstreams are not the same thing:
+ *
+ *   - direct: the full GitHub query string, built here, with an optional
+ *     visitor-supplied bearer token.
+ *   - edge:   the raw user text only, because the worker appends
+ *     `in:name,description,readme` itself. Sending the pre-built query would
+ *     duplicate that qualifier and GitHub would reject it.
+ */
+function pageUrl(input, page, edge) {
+  if (edge) {
+    return (
+      `${edge}/api/search?q=${encodeURIComponent(String(input).trim())}` +
+      `&page=${page}&per_page=${PER_PAGE}`
+    );
+  }
+  return (
+    `${API}?q=${encodeURIComponent(buildQuery(input))}` +
+    `&per_page=${PER_PAGE}&sort=stars&order=desc&page=${page}`
+  );
+}
+
+/**
  * Fetch one page of results.
  *
  * Returns a discriminated result rather than throwing so the caller can decide
  * whether a mid-pagination rate limit is fatal (nothing found) or partial
  * (keep what we already have).
  */
-async function fetchPage(input, page, opts) {
-  const headers = {
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
-  if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+async function fetchPage(input, page, opts, edge) {
+  const headers = { Accept: "application/vnd.github+json" };
+  if (edge) {
+    // No token, and none needed: the worker holds the credential server-side.
+  } else {
+    headers["X-GitHub-Api-Version"] = "2022-11-28";
+    if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+  }
 
-  const url =
-    `${API}?q=${encodeURIComponent(buildQuery(input))}` +
-    `&per_page=${PER_PAGE}&sort=stars&order=desc&page=${page}`;
+  const res = await fetch(pageUrl(input, page, edge), {
+    headers,
+    signal: opts.signal,
+  });
 
-  const res = await fetch(url, { headers, signal: opts.signal });
+  /**
+   * A worker that is down must not take search with it. Fall back to talking to
+   * GitHub directly for this page, which restores the visitor's own IP-based
+   * budget rather than leaving them with nothing.
+   */
+  if (edge && (res.status >= 500 || res.status === 404)) {
+    return fetchPage(input, page, { ...opts, _retried: true }, null);
+  }
 
   if (res.status === 403 || res.status === 429) {
     return { kind: "rate-limited", wait: resetSeconds(res) };
@@ -201,6 +257,7 @@ export async function searchGitHub(input, opts = {}) {
   };
   if (!q) return empty;
 
+  const edge = opts._retried ? null : edgeEndpoint();
   const wantPages = Math.max(1, Math.min(MAX_PAGES, opts.pages ?? 1));
   const seen = new Set();
   const results = [];
@@ -211,7 +268,7 @@ export async function searchGitHub(input, opts = {}) {
   for (let page = 1; page <= wantPages; page++) {
     let res;
     try {
-      res = await fetchPage(input, page, opts);
+      res = await fetchPage(input, page, opts, edge);
     } catch (err) {
       if (err && err.name === "AbortError") throw err;
       partial = results.length
@@ -261,4 +318,34 @@ export async function searchGitHub(input, opts = {}) {
       ? { error: partial }
       : {}),
   };
+}
+
+/**
+ * Ask the edge whether a real-time result is actually serving.
+ *
+ * This is the one thing the browser genuinely cannot do. GitHub's API reports
+ * that a repository *has* Pages enabled, which is a repository setting and can
+ * be weeks out of date with reality. The site's own liveness pass covers the
+ * curated index, but these results are outside it, so without a server they can
+ * only ever be labelled unverified.
+ *
+ * From the worker there is no CORS restriction, so a real HEAD can be made and
+ * the answer is honest. Returns null when no edge is configured or the check
+ * cannot be completed, so callers can treat null as "still unknown" rather than
+ * as "dead".
+ */
+export async function verifyLiveness(url, opts = {}) {
+  const edge = edgeEndpoint();
+  if (!edge) return null;
+  try {
+    const res = await fetch(`${edge}/api/live?u=${encodeURIComponent(url)}`, {
+      signal: opts.signal,
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return typeof body.alive === "boolean" ? body : null;
+  } catch {
+    // An unreachable worker is not evidence that a site is dead.
+    return null;
+  }
 }
