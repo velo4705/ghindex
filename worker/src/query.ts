@@ -79,3 +79,78 @@ export function isProbeAllowed(raw: string): boolean {
   if (u.username || u.password) return false;
   return true;
 }
+
+/**
+ * Hosts that serve many independent sites, so a per-user host budget is enough.
+ *
+ * Split into two lists on purpose, because conflating them is a trap:
+ *
+ * - `github.io` is shared only as the bare apex. Its *subdomains* are the
+ *   individual personal sites this index is made of, so they must not be
+ *   swept in. Matching them by suffix would refuse the entire corpus, which is
+ *   the opposite of the intent.
+ * - `pages.github.io` is one shared host by name.
+ * - `github.com` and `githubusercontent.com` are shared as whole domains, and
+ *   matching subdomains does matter there: an exact-match set quietly lets
+ *   `raw.githubusercontent.com` through the thing it was excluded for.
+ */
+export const PROBE_SHARED_HOSTS: ReadonlySet<string> = new Set([
+  "github.io",
+  "pages.github.io",
+]);
+
+/** Domains where every subdomain is equally shared. */
+export const PROBE_SHARED_DOMAINS: ReadonlySet<string> = new Set([
+  "github.com",
+  "githubusercontent.com",
+]);
+
+/** Distinct hosts a single caller may probe through the shared endpoint. */
+export const PROBE_MAX_HOSTS = 6;
+
+/**
+ * Count the distinct hosts a caller is asking about, and return them.
+ *
+ * Malformed entries are skipped rather than rejected: the caller is a browser
+ * rendering a list, so one bad URL in a thousand should not throw away the rest.
+ */
+export function probeHosts(urls: string[]): Set<string> {
+  const hosts = new Set<string>();
+  for (const raw of urls) {
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      continue;
+    }
+    hosts.add(u.hostname.toLowerCase());
+  }
+  return hosts;
+}
+
+/**
+ * Whether a host is shared: the bare apex, a named shared host, or any
+ * subdomain of a wholly shared domain.
+ */
+function isSharedHost(host: string): boolean {
+  if (PROBE_SHARED_HOSTS.has(host)) return true;
+  for (const d of PROBE_SHARED_DOMAINS) {
+    if (host === d || host.endsWith(`.${d}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a batch of URLs may be proxied, as a page of results rather than as
+ * one deliberate check.
+ *
+ * A caller is refused once it exceeds the host budget, or names a shared host at
+ * all. Everything else is left to the per-URL allowlist in `isProbeAllowed`.
+ */
+export function probeBatchAllowed(urls: string[]): boolean {
+  const hosts = probeHosts(urls);
+  if (hosts.size === 0) return true;
+  if (hosts.size > PROBE_MAX_HOSTS) return false;
+  for (const h of hosts) if (isSharedHost(h)) return false;
+  return true;
+}

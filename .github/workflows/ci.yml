@@ -43,6 +43,14 @@ jobs:
       - name: On-demand GitHub search
         run: bun run src/publish/test-wide-search.ts
 
+      # The edge worker had no CI step at all, so its proxy allowlist, token
+      # fallback and liveness verdicts were only ever checked by hand.
+      - name: Edge worker
+        run: bun run worker/test-worker.ts
+
+      - name: Landing page shelves
+        run: bun run src/publish/test-landing.ts
+
       - name: Generate static pages, then verify them
         run: |
           bun run build

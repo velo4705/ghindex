@@ -46,6 +46,8 @@ import {
   clampPerPage,
   isProbeAllowed,
   normalizeQuery,
+  probeBatchAllowed,
+  PROBE_MAX_HOSTS,
   searchCacheKey,
 } from "./query.ts";
 
@@ -392,6 +394,10 @@ async function refreshSearch(
  *
  * Only github.io hosts are accepted; see isProbeAllowed for why that
  * restriction is load-bearing rather than cosmetic.
+ *
+ * This is the explicit, single-site endpoint. It is deliberately more
+ * permissive than the batch endpoint, because the caller named one URL they
+ * care about. A page that renders many results must use /api/live/batch.
  */
 async function handleLive(
   url: URL,
@@ -426,6 +432,99 @@ async function handleLive(
   return out;
 }
 
+/** Upper bound on a batch, so one request cannot turn into a flood. */
+const LIVE_BATCH_MAX = 12;
+
+/** Sequential, not parallel: a caller should not open N sockets at once. */
+const LIVE_BATCH_CONCURRENCY = 4;
+
+/**
+ * Check several URLs in one request.
+ *
+ * This exists because a results page wants to annotate a dozen rows, and a dozen
+ * separate requests from a browser is a dozen cold Worker invocations plus a
+ * dozen cache misses for the next visitor. Batching turns that into one.
+ *
+ * It is also the riskier endpoint, because it acts on a list the caller did not
+ * individually choose. So it enforces a distinct-host budget and refuses shared
+ * hosts outright; see probeBatchAllowed for the reasoning. The single-URL
+ * endpoint's looser rule does not apply here.
+ */
+async function handleLiveBatch(
+  url: URL,
+  cache: Cache | null,
+  ctx: { waitUntil(p: Promise<unknown>): void } | null,
+): Promise<Response> {
+  const raw = (url.searchParams.get("u") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (raw.length === 0) {
+    return new Response(JSON.stringify({ error: "no urls" }), {
+      status: 400,
+      headers: { ...JSON_HEADERS, "cache-control": "no-store" },
+    });
+  }
+  if (raw.length > LIVE_BATCH_MAX) {
+    return new Response(JSON.stringify({ error: `max ${LIVE_BATCH_MAX} urls per batch` }), {
+      status: 400,
+      headers: { ...JSON_HEADERS, "cache-control": "no-store" },
+    });
+  }
+  // Refuse before doing any work, so a rejected batch costs one lookup and no
+  // outbound traffic at all.
+  if (!probeBatchAllowed(raw)) {
+    return new Response(
+      JSON.stringify({
+        error: "batch refused",
+        reason: `at most ${PROBE_MAX_HOSTS} distinct per-user hosts, and no shared hosts`,
+      }),
+      { status: 403, headers: { ...JSON_HEADERS, "cache-control": "no-store" } },
+    );
+  }
+
+  const results: Record<string, unknown> = {};
+  const puts: Array<Promise<unknown>> = [];
+  const queue = raw.filter((u) => isProbeAllowed(u));
+
+  const worker = async () => {
+    while (queue.length) {
+      const target = queue.shift() as string;
+      const key = `https://ghindex.internal/live?u=${encodeURIComponent(target)}`;
+      const cached = cache ? await cache.match(new Request(key)) : null;
+      if (cached) {
+        results[target] = await cached.json();
+        continue;
+      }
+      const result = await probe(target);
+      results[target] = result;
+      const stored = new Response(JSON.stringify(result), {
+        headers: { ...JSON_HEADERS, "cache-control": `public, max-age=${livenessTtl(result.verdict)}` },
+      });
+      // Each entry is cached exactly as the single-URL endpoint would cache it,
+      // so a batch warms the cache for the explicit checks too.
+      if (cache) puts.push(cache.put(new Request(key), stored));
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(LIVE_BATCH_CONCURRENCY, queue.length) }, worker),
+  );
+  if (cache && puts.length) ctx?.waitUntil(Promise.all(puts));
+
+  // Anything the allowlist rejected gets an explicit entry rather than being
+  // silently dropped, so the caller can tell "not checked" from "not allowed".
+  for (const u of raw) {
+    if (!(u in results)) results[u] = { verdict: "error", status: 0, detail: "not a github.io url" };
+  }
+
+  return new Response(JSON.stringify({ results }), {
+    headers: {
+      ...JSON_HEADERS,
+      // Short: the batch itself is assembled per visitor, so caching the
+      // response would pin it to whoever asked first.
+      "cache-control": "public, max-age=60",
+      "x-batch": String(raw.length),
+    },
+  });
+}
+
 /**
  * Classify an HTTP status into a verdict a human can act on.
  *
@@ -453,13 +552,28 @@ function verdictFor(status: number): string {
  * falls back to a ranged GET rather than being recorded as a dead site.
  */
 async function probe(target: string): Promise<Record<string, unknown>> {
-  const checkedAt = new Date().toISOString();
-  const attempt = async (method: "HEAD" | "GET") => {
-    try {
-      return await fetch(target, {
-        method,
-        redirect: "follow",
-        signal: AbortSignal.timeout(6000),
+    const checkedAt = new Date().toISOString();
+    const attempt = async (method: "HEAD" | "GET") => {
+      try {
+        return await fetch(target, {
+          method,
+          /**
+           * Manual, not follow, and that is a correctness decision rather than a
+           * style one.
+           *
+           * With `follow`, a redirect whose destination then fails makes the whole
+           * fetch throw, and the site gets reported as "unreachable" — even though
+           * it answered perfectly well. The real case: ovilia.github.io 301s to
+           * http://zhangwenli.com/, which the Worker cannot complete, so the
+           * honest "this redirects somewhere else" was being thrown away and
+           * reported as "no response". Plenty of Pages sites redirect to a custom
+           * domain, so this mislabels a whole class of perfectly live sites.
+           *
+           * Manual keeps the 3xx as the answer. A redirect still counts as alive,
+           * and the destination is reported so the index can say where it went.
+           */
+          redirect: "manual",
+          signal: AbortSignal.timeout(6000),
         headers: {
           // Identify honestly. Guessing a browser UA would make sites look
           // reachable when a real visitor's browser gets a different answer,
@@ -491,16 +605,22 @@ async function probe(target: string): Promise<Record<string, unknown>> {
       checkedAt,
     };
   }
-  const verdict = verdictFor(res.status);
-  return {
-    url: target,
-    // Kept for backwards compatibility: `alive` is strictly "served content".
-    alive: verdict === "alive",
-    status: res.status,
-    verdict,
-    viaHead: !fellBack,
-    checkedAt,
-  };
+    const verdict = verdictFor(res.status);
+    // Where a redirect points is the interesting part for a Pages site: it is
+    // how a github.io URL turns out to be a front door for a custom domain.
+    const location = res.status >= 300 && res.status < 400
+      ? res.headers.get("location")
+      : null;
+    return {
+      url: target,
+      // Kept for backwards compatibility: `alive` is strictly "served content".
+      alive: verdict === "alive",
+      status: res.status,
+      verdict,
+      ...(location ? { redirectsTo: location } : {}),
+      viaHead: !fellBack,
+      checkedAt,
+    };
 }
 
 /**
@@ -536,6 +656,8 @@ export async function handleRequest(
       return handleSearch(url, env, cache, ctx);
     case "/api/live":
       return handleLive(url, cache, ctx);
+    case "/api/live/batch":
+      return handleLiveBatch(url, cache, ctx);
     default:
       return new Response(JSON.stringify({ error: "not found" }), {
         status: 404,

@@ -571,5 +571,121 @@ console.log("=== verdicts distinguish dead from merely unfriendly ===");
 
 globalThis.fetch = realFetch;
 
+console.log("=== a redirect is an answer, not a failure ===");
+{
+  // The real case: a Pages site 301s to a custom domain the Worker cannot
+  // complete. With `redirect: "follow"` the fetch threw and the site was
+  // reported "unreachable" — factually wrong, and it applies to every Pages
+  // site that has moved to its own domain.
+  globalThis.fetch = (async () =>
+    new Response(null, {
+      status: 301,
+      headers: { location: "http://example-personal-site.com/" },
+    })) as typeof fetch;
+
+  const res = await call("/api/live?u=https://redirects-user.github.io/", {}, null, null);
+  const body = (await res.json()) as any;
+  eq("a 301 is alive", String(body.verdict), "alive");
+  eq("and reports where it went", String(body.redirectsTo), "http://example-personal-site.com/");
+
+  for (const status of [301, 302, 307, 308]) {
+    globalThis.fetch = (async () =>
+      new Response(null, { status, headers: { location: "https://elsewhere.example/" } })) as typeof fetch;
+    const r = (await (await call(`/api/live?u=https://r${status}-user.github.io/`, {}, null, null)).json()) as any;
+    eq(`HTTP ${status} counts as alive`, String(r.verdict), "alive");
+    check(`HTTP ${status} surfaces the destination`, typeof r.redirectsTo === "string", String(r.redirectsTo));
+  }
+
+  // A 200 must not claim a destination it does not have.
+  globalThis.fetch = (async () => new Response(null, { status: 200 })) as typeof fetch;
+  const plain = (await (await call("/api/live?u=https://plain-user.github.io/", {}, null, null)).json()) as any;
+  check("a direct 200 has no redirect target", plain.redirectsTo === undefined, String(plain.redirectsTo));
+}
+
+console.log("=== batch liveness is bounded where a single check is not ===");
+{
+  // A front page renders many rows at once, so the batch endpoint is the one
+  // that can be turned into a fan-out over other people's servers. These checks
+  // are the limit that stops it.
+  const probeable = Array.from(
+    { length: 7 },
+    (_, i) => `https://h${i}.github.io/`,
+  );
+
+  globalThis.fetch = (async () => new Response(null, { status: 200 })) as typeof fetch;
+
+  const ok = await call(`/api/live/batch?u=${probeable.slice(0, 5).join(",")}`);
+  eq("a small batch of personal hosts is allowed", String(ok.status), "200");
+  const okBody = (await ok.json()) as any;
+  eq("every requested url gets an answer", String(Object.keys(okBody.results).length), "5");
+  eq("and the answer is a verdict", String(okBody.results[probeable[0]].verdict), "alive");
+
+  const tooMany = await call(`/api/live/batch?u=${probeable.join(",")}`);
+  eq("more hosts than the budget is refused", String(tooMany.status), "403");
+
+  // Shared hosts are refused in a batch even though a single explicit check
+  // allows them: one origin can carry thousands of unrelated sites, so a page
+  // that named thousands of paths under it would be a bot aimed at one host.
+  for (const shared of [
+    "https://pages.github.io/x",
+    "https://github.io/x",
+    "https://github.com/a/b",
+    "https://raw.githubusercontent.com/a",
+    "https://gist.githubusercontent.com/a",
+  ]) {
+    const r = await call(`/api/live/batch?u=${encodeURIComponent(shared)}`);
+    eq(`shared host refused in a batch: ${new URL(shared).hostname}`, String(r.status), "403");
+  }
+
+  // Subdomains of github.io ARE the personal sites this index is made of, so
+  // they must stay allowed. Treating github.io as a suffix-matched shared host
+  // would refuse all 7,813 of them, which is the bug this pins down.
+  const personal = await call("/api/live/batch?u=https://someone.github.io/,https://other.github.io/");
+  eq("personal github.io subdomains are allowed in a batch", String(personal.status), "200");
+
+  // ...but the same host is fine for one deliberate check. This is the whole
+  // point of the two tiers: the reader who clicks a link learns whether it
+  // works, but a page cannot farm that endpoint for a whole domain.
+  const single = await call(`/api/live?u=${encodeURIComponent("https://pages.github.io/one-page")}`);
+  eq("shared host still allowed for one explicit check", String(single.status), "200");
+
+  const oversize = await call(
+    `/api/live/batch?u=${Array.from({ length: 13 }, (_, i) => `https://x${i}.github.io/`).join(",")}`,
+  );
+  eq("a batch over the size cap is refused", String(oversize.status), "400");
+
+  const empty = await call("/api/live/batch?u=");
+  eq("an empty batch is refused", String(empty.status), "400");
+
+  // A refused url inside an otherwise fine batch must be visible as refused,
+  // not silently missing, or the caller cannot tell "not checked" from "no".
+  const mixed = await call(
+    `/api/live/batch?u=${["https://ok1.github.io/", "https://evil.example.com/"].join(",")}`,
+  );
+  const mixedBody = (await mixed.json()) as any;
+  eq("a bad url does not sink the batch", String(mixed.status), "200");
+  check(
+    "and is reported as not allowed",
+    String(mixedBody.results["https://evil.example.com/"].detail).includes("not a github.io"),
+    JSON.stringify(mixedBody.results["https://evil.example.com/"]),
+  );
+  eq("while the good url is still probed", String(mixedBody.results["https://ok1.github.io/"].verdict), "alive");
+}
+
+{
+  // A batch must warm the same cache entries the single-URL endpoint reads, so
+  // the second visitor to check a front page gets hits instead of misses.
+  const { cache } = fakeCache();
+  const ctx = fakeCtx();
+  globalThis.fetch = (async () => new Response(null, { status: 200 })) as typeof fetch;
+
+  await call("/api/live/batch?u=https://warm-user.github.io/", {}, cache, ctx.ctx);
+  await ctx.drain();
+  const afterBatch = await call("/api/live?u=https://warm-user.github.io/", {}, cache, null);
+  eq("the single check then hits cache", afterBatch.headers.get("x-cache"), "HIT");
+}
+
+globalThis.fetch = realFetch;
+
 console.log(`\n${fail === 0 ? "WORKER OK" : `${fail} CHECK(S) FAILED`}`);
 process.exit(fail === 0 ? 0 : 1);

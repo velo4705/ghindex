@@ -349,3 +349,41 @@ export async function verifyLiveness(url, opts = {}) {
     return null;
   }
 }
+
+/**
+ * Check several sites in one request, for a page that is already on screen.
+ *
+ * The landing page shows dozens of cards. Asking about each one separately would
+ * be dozens of Worker invocations, each of which would then be a cold cache
+ * entry for the next visitor as well. One batch is one request and warms the
+ * same per-URL cache entries, so the second person to load the page gets hits.
+ *
+ * The worker applies stricter limits here than to the single-URL endpoint, since
+ * a page naming many hosts is the shape that could be turned into a fan-out over
+ * other people's servers. Those limits are the worker's, not the caller's, and
+ * exceeding them returns a 403 which surfaces below as "no answers" rather than
+ * as any claim about the sites.
+ *
+ * Returns a Map of url -> verdict. A missing url means "not checked", which is
+ * never the same as "dead".
+ */
+export async function verifyLivenessBatch(urls, opts = {}) {
+  const edge = edgeEndpoint();
+  const out = new Map();
+  const list = (urls ?? []).filter((u) => typeof u === "string" && u);
+  if (!edge || !list.length) return out;
+  try {
+    const res = await fetch(
+      `${edge}/api/live/batch?u=${encodeURIComponent(list.join(","))}`,
+      { signal: opts.signal },
+    );
+    if (!res.ok) return out;
+    const body = await res.json();
+    for (const [url, verdict] of Object.entries(body?.results ?? {})) {
+      if (verdict && typeof verdict.verdict === "string") out.set(url, verdict);
+    }
+  } catch {
+    // No answers is fine; the cards fall back to the offline probe date.
+  }
+  return out;
+}

@@ -106,6 +106,10 @@ worker.onmessage = (e) => {
     $("count").innerHTML = `<b>${m.total.toLocaleString()}</b> live sites indexed`;
     return;
   }
+  if (m.type === "landing") {
+    renderLanding(m.landing);
+    return;
+  }
   if (m.type === "error") {
     $("meta").textContent = `Search error: ${m.message}`;
     return;
@@ -542,6 +546,133 @@ function runSearch() {
   });
 }
 
+// ---------------------------------------------------------------- landing
+
+/**
+ * The front page's browse surface: shelves by kind, plus a band of obscure sites.
+ *
+ * The reasoning for it is in search-worker.js where it is built. The short
+ * version: the unfiltered list is ordered by stars, and the top of that list is
+ * framework documentation and "awesome" lists, which is a poor answer to "what
+ * is out there?". So the landing leads with browsable shelves and something
+ * genuinely obscure, and the star-ordered list stays below where it belongs.
+ */
+const landing = { shelves: [], live: new Map() };
+
+/**
+ * Hide the landing once the reader has asked for something specific.
+ *
+ * It is a first impression, not a permanent fixture. Keeping it above results
+ * that already match a query would just push the answer they asked for down the
+ * page.
+ */
+function hideLanding() {
+  const el = $("landing");
+  if (el && !el.hidden) {
+    el.hidden = true;
+    $("shelves").innerHTML = "";
+  }
+}
+
+function landingCardHtml(row) {
+  const stars = Number(row.s) || 0;
+  const label = `${row.o}/${row.r}`;
+  return `<div class="card-mini" data-live="${esc(row.u)}">
+    <a href="${esc(safeUrl(row.u))}" target="_blank" rel="noopener noreferrer">${esc(row.t || label)}</a>
+    ${row.d ? `<p class="desc">${esc(row.d)}</p>` : ""}
+    <div class="foot">
+      <span>${stars.toLocaleString()} ★</span>
+      <span class="live-slot"></span>
+    </div>
+  </div>`;
+}
+
+function renderLanding(data) {
+  landing.shelves = data?.shelves ?? [];
+
+  $("shelves").innerHTML = landing.shelves
+    .map(
+      (s) => `<div class="shelf">
+        <div class="shelf-head">
+          <h2>${esc(s.label)}</h2>
+          <p class="blurb">${esc(s.blurb)} · ${s.count.toLocaleString()} in this index</p>
+          <button type="button" class="shelf-more" data-cats="${esc(s.cats.join(","))}">
+            Show all ${s.count.toLocaleString()}
+          </button>
+        </div>
+        <div class="shelf-strip">${s.rows.map(landingCardHtml).join("")}</div>
+      </div>`,
+    )
+    .join("");
+
+  $("landing").hidden = false;
+  verifyLanding();
+}
+
+/**
+ * Link-check the landing cards.
+ *
+ * These rows are probe-verified offline, but that pass can be days old, so the
+ * date alone is not enough to claim a card works.
+ *
+ * The worker caps a batch at six distinct hosts and twelve URLs, so the chunks
+ * are six URLs long: six URLs can span at most six hosts, which is inside both
+ * limits without having to reason about host grouping here. One request per six
+ * cards rather than one per card.
+ */
+const LANDING_CHUNK = 6;
+
+async function verifyLanding() {
+  const { verifyLivenessBatch } = await import("./github-search.js");
+  const urls = Array.from(
+    new Set(landing.shelves.flatMap((s) => s.rows.map((r) => r.u)).filter(Boolean)),
+  );
+
+  for (let i = 0; i < urls.length; i += LANDING_CHUNK) {
+    const found = await verifyLivenessBatch(urls.slice(i, i + LANDING_CHUNK));
+    for (const [url, v] of found) landing.live.set(url, v);
+    paintLanding();
+  }
+}
+
+function paintLanding() {
+  for (const card of document.querySelectorAll("#landing [data-live]")) {
+    const url = card.getAttribute("data-live");
+    const v = landing.live.get(url);
+    if (!v) continue;
+    const verdict = v.verdict;
+    card.classList.toggle("is-gone", verdict === "gone" || verdict === "unreachable");
+    const slot = card.querySelector(".live-slot");
+    if (!slot) continue;
+    const badge = LIVE_BADGES[verdict];
+    if (!badge) continue;
+    const existing = slot.querySelector(".pill");
+    if (existing) existing.remove();
+    slot.innerHTML = `<span class="pill ${badge.cls}" title="${esc(landingWhy(verdict))}">${esc(badge.text)}</span>`;
+  }
+}
+
+function landingWhy(verdict) {
+  if (verdict === "blocked") return "This site refused an automated request. It may still work in a browser.";
+  if (verdict === "gone") return "Checked just now and nothing is being served.";
+  if (verdict === "unreachable") return "Checked just now and the host did not respond.";
+  if (verdict === "alive") return "Checked just now and responding.";
+  return "";
+}
+
+/** "Show all N" on a shelf applies the same category filter the facet uses. */
+document.addEventListener("click", (e) => {
+  if (!(e.target instanceof HTMLElement)) return;
+  const btn = e.target.closest(".shelf-more");
+  if (!btn) return;
+  state.activeCats = new Set(btn.dataset.cats.split(",").filter(Boolean));
+  $("q").value = "";
+  // The wide results belong to the query being replaced, so they go too.
+  resetWide();
+  hideLanding();
+  runSearch();
+});
+
 // ---------------------------------------------------------------- facets
 
 /**
@@ -578,6 +709,7 @@ $("cats").addEventListener("click", (e) => {
   const id = btn.dataset.cat;
   if (state.activeCats.has(id)) state.activeCats.delete(id);
   else state.activeCats.add(id);
+  hideLanding();
   runSearch();
 });
 
@@ -685,6 +817,9 @@ $("f").addEventListener("submit", (e) => {
 let debounce;
 let wideDebounce;
 $("q").addEventListener("input", () => {
+  // Typing is asking a specific question, so the browse surface gets out of the
+  // way rather than sitting between the reader and the answer.
+  hideLanding();
   clearTimeout(debounce);
   debounce = setTimeout(runSearch, 200);
   // Ask GitHub too, but only once typing pauses. The unauthenticated search

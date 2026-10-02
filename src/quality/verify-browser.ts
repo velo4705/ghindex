@@ -200,6 +200,30 @@ async function runChecks(browser: string) {
   const facets = await evalJs(`document.querySelectorAll('.facet').length`);
   check("tag facets rendered", facets > 0, `${facets} facets`);
 
+  // The landing is built in the search worker from the shards already in
+  // memory, so it must appear without any network call. That it does is the
+  // whole contract: a front page that only appears when the edge worker is
+  // reachable would be empty for most visits.
+  const landing = await evalJs(`(() => {
+    const el = document.getElementById('landing');
+    return {
+      hidden: el ? el.hidden : true,
+      shelves: document.querySelectorAll('#landing .shelf').length,
+      cards: document.querySelectorAll('#landing .card-mini').length,
+      firstLabel: document.querySelector('#landing .shelf-head h2')?.textContent ?? '',
+    };
+  })()`);
+  check("landing is shown on arrival", landing?.hidden === false, JSON.stringify(landing));
+  check("landing has shelves", landing?.shelves >= 3, `${landing?.shelves} shelves`);
+  check("landing has cards", landing?.cards >= 12, `${landing?.cards} cards`);
+  check("a shelf is labelled", (landing?.firstLabel ?? "").length > 0, landing?.firstLabel);
+
+  // Cards must be real links, not placeholders.
+  const cardLinks = await evalJs(
+    `Array.from(document.querySelectorAll('#landing .card-mini a')).filter(a => /^https:\\/\\/[\\w.-]+\\.github\\.io\\//.test(a.getAttribute('href') || '')).length`,
+  );
+  check("every landing card links somewhere real", cardLinks === landing?.cards, `${cardLinks}/${landing?.cards}`);
+
   // Type a query and confirm filtering narrows results.
   await evalJs(`(() => { const q=document.getElementById('q'); q.value='portfolio';
     q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
@@ -207,6 +231,10 @@ async function runChecks(browser: string) {
   const afterMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
   const afterRows = await evalJs(`document.querySelectorAll('.row').length`);
   check("search filters results", afterRows > 0 && /match/.test(afterMeta), afterMeta);
+
+  // Asking a specific question should get the browse surface out of the way.
+  const landingAfterTyping = await evalJs(`document.getElementById('landing')?.hidden`);
+  check("typing hides the landing shelves", landingAfterTyping === true, `hidden=${landingAfterTyping}`);
 
   // Tag facet. Clear the search box FIRST: otherwise the facet combines with a
   // typed query and a narrow intersection can legitimately yield 0 matches,
