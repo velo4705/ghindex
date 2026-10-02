@@ -51,6 +51,9 @@ jobs:
       - name: Landing page shelves
         run: bun run src/publish/test-landing.ts
 
+      - name: Star quota
+        run: bun run src/publish/test-star-quota.ts
+
       - name: Generate static pages, then verify them
         run: |
           bun run build

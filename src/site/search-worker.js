@@ -191,6 +191,15 @@ async function runQuery(id, q, filters) {
  * was not: every entry was checked to exist in the corpus and to actually serve,
  * and each shelf is a kind of site rather than a rank. They will rot, which is
  * why the front page link-checks them live and why `missing` is reported below.
+ *
+ * One hard constraint: the published index is capped per star band
+ * (src/publish/star-quota.ts), so a curated URL outside the quota has no page to
+ * link to and will read as broken here. An earlier draft of the people and blogs
+ * shelves lost ten of its sixteen entries to that cap, including Ovilia,
+ * mldangelo, meekdai, amandakelake and srid/neuron, and they were replaced from
+ * inside the surviving set. That is why three of the new entries are under 100
+ * stars: the cap clears the bottom band hardest. Check a new URL against the
+ * quota before adding it, not after.
  */
 const CURATED = [
   {
@@ -247,13 +256,13 @@ const CURATED = [
     cats: ["portfolio"],
     urls: [
       "https://bchiang7.github.io/",
-      "https://ovilia.github.io/",
-      "https://jarrekk.github.io/Jalpc/",
-      "https://mldangelo.github.io/personal-site/",
       "https://renovamen.github.io/playground-macos/",
       "https://ryanfitzgerald.github.io/devportfolio",
-      "https://varadbhogayata.github.io/",
-      "https://rajaprerak.github.io/",
+      "https://vivek9patel.github.io/",
+      "https://wiscaksono.github.io/site/",
+      "https://bhupesh-v.github.io/til/",
+      "https://kalabasa.github.io/leanrada.com/",
+      "https://serozr.github.io/cyber-portfolio/",
     ],
   },
   {
@@ -279,13 +288,13 @@ const CURATED = [
     cats: ["blog"],
     urls: [
       "https://qiubaiying.github.io/",
-      "https://meekdai.github.io/",
-      "https://mzlogin.github.io/",
-      "https://dobiasd.github.io/articles/",
-      "https://amandakelake.github.io/blog/",
       "https://xugaoyi.github.io/vuepress-theme-vdoing/",
       "https://varharrie.github.io/",
-      "https://srid.github.io/neuron/",
+      "https://jocs.github.io/",
+      "https://dunwu.github.io/blog/",
+      "https://szluyu99.github.io/gin-vue-blog/",
+      "https://mercyblitz.github.io/",
+      "https://xizhibei.github.io/blog/",
     ],
   },
 ];

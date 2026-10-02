@@ -18,6 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { applyStarQuota } from "./star-quota";
 
 const SITE = join(import.meta.dir, "..", "site");
 const DATA = join(SITE, "data");
@@ -163,6 +164,28 @@ if (landing) {
   check(
     "every shelf row is a real published row",
     shelfUrls.every((u) => byUrl.has(u)),
+  );
+
+  // Every pick must also survive the publish quota (src/publish/star-quota.ts),
+  // or the shelf links to a page that the next `bun run publish` will not
+  // generate. Ten of sixteen people/blogs picks were lost this way, so it is
+  // checked here rather than left to be rediscovered on the front page.
+  const quotaKept = new Set(
+    applyStarQuota(
+      allRows.map((r) => ({
+        ...r,
+        stars: r.s ?? 0,
+        description: r.d ?? "",
+        topics: r.g ?? [],
+        owner: r.o,
+      })),
+    ).map((r) => r.u),
+  );
+  const outOfQuota = shelfUrls.filter((u) => !quotaKept.has(u));
+  check(
+    "every curated pick survives the star quota",
+    outOfQuota.length === 0,
+    outOfQuota.join(", "),
   );
 
   // The specific regression this feature exists to prevent: the front page

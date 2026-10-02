@@ -23,13 +23,11 @@
  */
 
 import { existsSync, readFileSync, rmSync, mkdirSync } from "node:fs";
-import { PATHS } from "../paths";
 import { createHash } from "node:crypto";
-import { PATHS } from "../paths";
 import { isPublishable, decodeEntities, type Record } from "../index/core";
-import { PATHS } from "../paths";
 import { classify, CATEGORIES, CATEGORY_LABELS } from "../classify/taxonomy";
 import { PATHS } from "../paths";
+import { applyStarQuota } from "./star-quota";
 
 const outArg = process.argv.indexOf("--out");
 const OUT = outArg >= 0 ? process.argv[outArg + 1] : PATHS.data;
@@ -129,11 +127,17 @@ async function main() {
     process.exit(1);
   }
 
+  const balanced = applyStarQuota(aliveForPublish);
+  if (balanced.length === 0) {
+    console.error("[build] the star quota removed everything - refusing to publish an empty index");
+    process.exit(1);
+  }
+
   mkdirSync(OUT, { recursive: true });
 
   // Group into shards, sorting within shard for stable output.
   const groups = new Map<string, Packed[]>();
-  for (const rec of aliveForPublish) {
+  for (const rec of balanced) {
     const k = shardOf(rec.owner);
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k)!.push(pack(rec));
