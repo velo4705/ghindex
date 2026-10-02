@@ -41,5 +41,22 @@
   "topic:saas stars:1..5",
   "topic:wiki",
   "topic:wiki stars:1..5",
-  "topic:docs"
+  "topic:docs",
+  "topic:docs stars:1..5",
+  "topic:cli",
+  "topic:cli stars:1..5",
+  "topic:ui",
+  "topic:ui stars:1..5",
+  "topic:template",
+  "topic:template stars:1..5",
+  "topic:nextjs",
+  "topic:nextjs stars:1..5",
+  "topic:astro",
+  "topic:astro stars:1..5",
+  "topic:svelte",
+  "topic:svelte stars:1..5",
+  "topic:typescript",
+  "topic:typescript stars:1..5",
+  "topic:python",
+  "topic:python stars:1..5"
 ]

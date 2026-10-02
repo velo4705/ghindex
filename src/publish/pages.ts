@@ -27,8 +27,17 @@ import { decodeEntities } from "../index/core";
 import { PATHS } from "../paths";
 
 const SITE = PATHS.site;
-/** Cap per run so a huge corpus cannot blow up the git repo. */
-const MAX_PAGES = Number(process.env.MAX_PAGES ?? 6000);
+/**
+ * Cap per run so a huge corpus cannot blow up the git repo.
+ *
+ * These pages average ~2.5 KB, so 25,000 is ~62 MB, still comfortably under
+ * GitHub Pages' 100,000-file ceiling and small enough to commit. It was 6,000,
+ * which the corpus overtook: at 7,813 published records the cap silently threw
+ * away ~1,800 pages every run. A cap that is reached in normal operation is not
+ * a safety limit, it is a silent data loss bug, so this is set well above the
+ * current corpus and the run reports loudly if it is ever reached.
+ */
+const MAX_PAGES = Number(process.env.MAX_PAGES ?? 25000);
 
 const esc = (s: unknown) =>
   String(s ?? "").replace(
@@ -168,12 +177,28 @@ async function main() {
   // Rebuild the site pages dir so pages for now-dead sites disappear.
   if (existsSync(`${SITE}/sites`)) rmSync(`${SITE}/sites`, { recursive: true, force: true });
 
+  /**
+   * Order by stars, not by whatever order the shards happen to load in.
+   *
+   * This only matters when MAX_PAGES actually binds, but that is the point: it
+   * used to bind at 6,000 rows, which is below the current corpus, and the
+   * iteration order was alphabetical (shards a/m/s). So when the corpus grew
+   * past the cap, ~1,400 perfectly healthy sites silently lost their pages and
+   * the casualties were always the same ones: everything alphabetically after
+   * roughly "S". A site called "Zelda" kept a page and a 300-star site called
+   * "Aardvark" kept a page, while "Zephyr" lost one purely on its name.
+   *
+   * Truncating by popularity means a dropped site is dropped for being
+   * unremarkable rather than for being unlucky with the alphabet.
+   */
+  const ranked = [...rows].sort((a, b) => (b.s ?? 0) - (a.s ?? 0));
+
   let written = 0;
   let skippedNoTitle = 0;
   let skippedNoDesc = 0;
   const urls: string[] = ["", "categories/"];
 
-  for (const r of rows) {
+  for (const r of ranked) {
     if (written >= MAX_PAGES) break;
     // Title comes from scraped HTML and may be mojibake; fall back to the repo
     // name so the site still gets a page rather than vanishing from the index.
@@ -221,6 +246,24 @@ ${chips ? `<div class="chips">${chips}</div>` : ""}
     `[pages] wrote ${written} site pages (${skippedNoTitle} skipped: no usable title, ` +
       `${skippedNoDesc} had no description and used a derived one)`,
   );
+
+  /**
+   * If the cap is ever reached, say so loudly and by how much.
+   *
+   * This went unnoticed for a whole corpus growth cycle precisely because the
+   * cap reported nothing: the run claimed to have written every site, and the
+   * only symptom was 1,400 quietly vanishing pages showing up as unrelated
+   * deletions in `git status` during an unrelated commit. A silent truncation
+   * is indistinguishable from a dead site, so it now prints a WARNING.
+   */
+  const dropped = rows.length - written;
+  if (dropped > 0) {
+    console.log(
+      `[pages] WARNING: MAX_PAGES=${MAX_PAGES} reached, ${dropped} of ${rows.length} ` +
+        `sites got NO page. They are still searchable and in the index, but are ` +
+        `absent from the sitemap. Raise MAX_PAGES before publishing this output.`,
+    );
+  }
 
   // ---- category pages ----
   let catPages = 0;
