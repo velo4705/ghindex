@@ -24,7 +24,7 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { classify, CATEGORIES, CATEGORY_LABELS } from "../classify/taxonomy";
 import { decodeEntities } from "../index/core";
-import { PATHS } from "../paths";
+import { PATHS, sitePath } from "../paths";
 
 const SITE = PATHS.site;
 /**
@@ -84,24 +84,6 @@ function cleanText(s: unknown, max = 300): string | null {
 
   if (out.length > max) return `${out.slice(0, max).trimEnd()}...`;
   return out.length ? out : null;
-}
-
-/**
- * URL path segment for a site: owner/repo.
- *
- * Repo names can be things like "ademcancertel.github.io", so after replacing
- * unsafe characters the segment can still END in a dot ("ademcancertel.").
- * A trailing dot is not a valid Windows directory name and mkdir fails, so
- * dots are stripped from the end. Case is preserved because GitHub owners are
- * case-insensitive but distinct users differ only by case on Pages.
- */
-function sitePath(owner: string, repo: string): string {
-  const safe = (s: string) => {
-    const cleaned = s.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^[.]+/, "").replace(/[.]+$/, "");
-    // Guard against a name that reduces to nothing (e.g. "...").
-    return cleaned.length ? cleaned : "_";
-  };
-  return `sites/${safe(owner)}/${safe(repo)}`;
 }
 
 const STYLE = `

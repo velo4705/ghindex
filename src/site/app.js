@@ -1,10 +1,17 @@
 /**
  * ghindex read-side (M3).
  *
- * Search runs in a Web Worker (search-worker.js) so keystrokes never block.
- * Two views over the same result set:
+ * There is no front page. The page is a search box, and results appear under it
+ * once you type. Two views over the same result set:
  *   - row  : dense list, keyboard-friendly, the default
  *   - grid : live iframe previews, lazily mounted, capped and virtualized
+ *
+ * Nothing is fetched until it is needed. Boot loads the manifest and draws the
+ * category chips from it, so arriving costs one small request. Shards are read
+ * by the search worker on the first query and not before — an empty query reads
+ * none of them. A query does read all of them, because routing a query to the
+ * one shard that could match was tried and quietly cost about 90% of the
+ * results; see candidateShards in the worker.
  *
  * Grid previews are viable because only ~1.5% of live Pages sites send a
  * framing-blocking header (measured in M0/M1). Cross-origin iframes still fire
@@ -106,10 +113,6 @@ worker.onmessage = (e) => {
     $("count").innerHTML = `<b>${m.total.toLocaleString()}</b> live sites indexed`;
     return;
   }
-  if (m.type === "landing") {
-    renderLanding(m.landing);
-    return;
-  }
   if (m.type === "error") {
     $("meta").textContent = `Search error: ${m.message}`;
     return;
@@ -126,6 +129,7 @@ worker.onmessage = (e) => {
   $("meta").textContent =
     `${m.total.toLocaleString()} match${m.total === 1 ? "" : "es"}` +
     `${m.total > m.rows.length ? ` (showing ${m.rows.length})` : ""} · ${m.elapsedMs}ms`;
+  showIdle(false);
   renderFacets();
   renderPage();
 };
@@ -205,16 +209,16 @@ const WIDE_PAGE_STEP = 1;
 const WIDE_DEBOUNCE_MS = 700;
 
 /**
- * How many on-demand results to liveness-check, and how many at a time.
+ * How many on-demand results to liveness-check, and in what size batches.
  *
  * Each check is a Worker invocation that makes a real request to someone else's
  * site, so this is capped rather than exhaustive: it covers the top results on
- * screen, which are the ones anyone is likely to click. Sequential in small
- * batches so a page of 80 results does not open 80 simultaneous connections to
- * unrelated hosts.
+ * screen, which are the ones anyone is likely to click.
  */
 const LIVE_CHECK_LIMIT = 24;
-const LIVE_CHECK_CONCURRENCY = 5;
+
+/** URLs per batch. The worker allows twelve per call and six distinct hosts. */
+const LIVE_CHECK_CHUNK = 6;
 
 async function runWideSearch(opts = {}) {
   const q = $("q").value.trim();
@@ -367,9 +371,14 @@ function wideRowHtml(r) {
  * Rows that are confirmed gone are dimmed rather than removed, because a
  * transient failure should not hide a result, and a dead link is still a fact
  * the reader may want to see.
+ *
+ * Checks go out in batches rather than one at a time. Up to 24 URLs become one
+ * Worker request instead of 24, and each per-URL verdict is cached, so the next
+ * visitor asking about the same site is answered from the edge instead of
+ * reaching that site's host again.
  */
 async function verifyWideResults() {
-  const { verifyLiveness, edgeEndpoint } = await import("./github-search.js");
+  const { verifyLivenessBatch, edgeEndpoint } = await import("./github-search.js");
 
   /**
    * With no edge configured there is nothing to ask: a browser cannot make this
@@ -392,26 +401,22 @@ async function verifyWideResults() {
   for (const u of pending) wide.live.set(u, "checking");
   paintLiveRows();
 
-  const queue = pending.slice();
-  const worker = async () => {
-    while (queue.length) {
-      const url = queue.shift();
-      // A newer search has taken over; stop annotating rows that are gone.
-      if (token !== wide.verifyToken) return;
-      let res;
-      try {
-        res = await verifyLiveness(url);
-      } catch {
-        res = null;
-      }
-      if (token !== wide.verifyToken) return;
-      wide.live.set(url, res?.verdict ?? "error");
-      paintLiveRows();
+  // The worker's batch endpoint caps a call at twelve URLs and six distinct
+  // hosts, so chunks are six long: six URLs span at most six hosts, which is
+  // inside both limits without having to group by host here.
+  for (let i = 0; i < pending.length; i += LIVE_CHECK_CHUNK) {
+    const chunk = pending.slice(i, i + LIVE_CHECK_CHUNK);
+    let found;
+    try {
+      found = await verifyLivenessBatch(chunk);
+    } catch {
+      found = new Map();
     }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(LIVE_CHECK_CONCURRENCY, queue.length) }, worker),
-  );
+    // A newer search has taken over; stop annotating rows that are gone.
+    if (token !== wide.verifyToken) return;
+    for (const u of chunk) wide.live.set(u, found.get(u)?.verdict ?? "error");
+    paintLiveRows();
+  }
 }
 
 /**
@@ -531,9 +536,59 @@ function tagsHtml(row) {
   return `<span class="chips">${cats}${tags}</span>`;
 }
 
+// ---------------------------------------------------------------- idle state
+
+/**
+ * The prompt shown when there is no query.
+ *
+ * It replaces a front page rather than decorating one. With nothing typed there
+ * is no honest list to show: the unfiltered order is by stars, and the top of
+ * that is framework documentation and "awesome" lists, which answers a question
+ * nobody asked. An earlier version answered it with hand-picked shelves, which
+ * then had to be re-picked every time the publish quota moved. So the prompt
+ * says what the search covers and offers starting points instead, and every one
+ * of those starting points is checked to return results by
+ * src/publish/test-idle.ts.
+ */
+function showIdle(on) {
+  const el = $("idle");
+  if (el) el.hidden = !on;
+  if (on) {
+    $("meta").textContent = "";
+    $("facets").innerHTML = "";
+    const wide_ = $("wide-results");
+    if (wide_) wide_.innerHTML = "";
+  }
+}
+
+function hasFilters() {
+  return state.activeTags.size > 0 || state.activeCats.size > 0 || state.minStars > 0;
+}
+
+/**
+ * Run a query, or fall back to the prompt.
+ *
+ * A bare empty query is never sent to the worker. It would match every row, so
+ * the worker would fetch all 27 shards to build a leaderboard nobody asked for
+ * — which is exactly the cost the previous front page paid on every arrival.
+ * Category chips still browse, because they set a filter, and a filter with no
+ * text genuinely does need the whole index.
+ */
 function runSearch() {
   state.reqId++;
+  const q = $("q").value.trim();
+  if (!q && !hasFilters()) {
+    state.rows = [];
+    state.total = 0;
+    state.tags = [];
+    state.cats = [];
+    state.rendered = 0;
+    $("results").innerHTML = "";
+    showIdle(true);
+    return;
+  }
   $("meta").textContent = "Searching…";
+  showIdle(false);
   worker.postMessage({
     type: "query",
     id: state.reqId,
@@ -546,152 +601,33 @@ function runSearch() {
   });
 }
 
-// ---------------------------------------------------------------- landing
-
-/**
- * The front page's browse surface: shelves by kind, plus a band of obscure sites.
- *
- * The reasoning for it is in search-worker.js where it is built. The short
- * version: the unfiltered list is ordered by stars, and the top of that list is
- * framework documentation and "awesome" lists, which is a poor answer to "what
- * is out there?". So the landing leads with browsable shelves and something
- * genuinely obscure, and the star-ordered list stays below where it belongs.
- */
-const landing = { shelves: [], live: new Map() };
-
-/**
- * Hide the landing once the reader has asked for something specific.
- *
- * It is a first impression, not a permanent fixture. Keeping it above results
- * that already match a query would just push the answer they asked for down the
- * page.
- */
-function hideLanding() {
-  const el = $("landing");
-  if (el && !el.hidden) {
-    el.hidden = true;
-    $("shelves").innerHTML = "";
-  }
-}
-
-function landingCardHtml(row) {
-  const stars = Number(row.s) || 0;
-  const label = `${row.o}/${row.r}`;
-  return `<div class="card-mini" data-live="${esc(row.u)}">
-    <a href="${esc(safeUrl(row.u))}" target="_blank" rel="noopener noreferrer">${esc(row.t || label)}</a>
-    ${row.d ? `<p class="desc">${esc(row.d)}</p>` : ""}
-    <div class="foot">
-      <span>${stars.toLocaleString()} ★</span>
-      <span class="live-slot"></span>
-    </div>
-  </div>`;
-}
-
-function renderLanding(data) {
-  landing.shelves = data?.shelves ?? [];
-
-  $("shelves").innerHTML = landing.shelves
-    .map(
-      (s) => `<div class="shelf">
-        <div class="shelf-head">
-          <h2>${esc(s.label)}</h2>
-          <p class="blurb">${esc(s.blurb)} · ${s.count.toLocaleString()} in this index</p>
-          <button type="button" class="shelf-more" data-cats="${esc(s.cats.join(","))}">
-            Show all ${s.count.toLocaleString()}
-          </button>
-        </div>
-        <div class="shelf-strip">${s.rows.map(landingCardHtml).join("")}</div>
-      </div>`,
-    )
-    .join("");
-
-  $("landing").hidden = false;
-  verifyLanding();
-}
-
-/**
- * Link-check the landing cards.
- *
- * These rows are probe-verified offline, but that pass can be days old, so the
- * date alone is not enough to claim a card works.
- *
- * The worker caps a batch at six distinct hosts and twelve URLs, so the chunks
- * are six URLs long: six URLs can span at most six hosts, which is inside both
- * limits without having to reason about host grouping here. One request per six
- * cards rather than one per card.
- */
-const LANDING_CHUNK = 6;
-
-async function verifyLanding() {
-  const { verifyLivenessBatch } = await import("./github-search.js");
-  const urls = Array.from(
-    new Set(landing.shelves.flatMap((s) => s.rows.map((r) => r.u)).filter(Boolean)),
-  );
-
-  for (let i = 0; i < urls.length; i += LANDING_CHUNK) {
-    const found = await verifyLivenessBatch(urls.slice(i, i + LANDING_CHUNK));
-    for (const [url, v] of found) landing.live.set(url, v);
-    paintLanding();
-  }
-}
-
-function paintLanding() {
-  for (const card of document.querySelectorAll("#landing [data-live]")) {
-    const url = card.getAttribute("data-live");
-    const v = landing.live.get(url);
-    if (!v) continue;
-    const verdict = v.verdict;
-    card.classList.toggle("is-gone", verdict === "gone" || verdict === "unreachable");
-    const slot = card.querySelector(".live-slot");
-    if (!slot) continue;
-    const badge = LIVE_BADGES[verdict];
-    if (!badge) continue;
-    const existing = slot.querySelector(".pill");
-    if (existing) existing.remove();
-    slot.innerHTML = `<span class="pill ${badge.cls}" title="${esc(landingWhy(verdict))}">${esc(badge.text)}</span>`;
-  }
-}
-
-function landingWhy(verdict) {
-  if (verdict === "blocked") return "This site refused an automated request. It may still work in a browser.";
-  if (verdict === "gone") return "Checked just now and nothing is being served.";
-  if (verdict === "unreachable") return "Checked just now and the host did not respond.";
-  if (verdict === "alive") return "Checked just now and responding.";
-  return "";
-}
-
-/** "Show all N" on a shelf applies the same category filter the facet uses. */
-document.addEventListener("click", (e) => {
-  if (!(e.target instanceof HTMLElement)) return;
-  const btn = e.target.closest(".shelf-more");
-  if (!btn) return;
-  state.activeCats = new Set(btn.dataset.cats.split(",").filter(Boolean));
-  $("q").value = "";
-  // The wide results belong to the query being replaced, so they go too.
-  resetWide();
-  hideLanding();
-  runSearch();
-});
-
 // ---------------------------------------------------------------- facets
 
 /**
- * Categories are the primary browse control (they answer "what kind of thing
- * is this?"). Raw topics are secondary detail. Both are kept: topics drive
- * free-text search, categories drive browsing.
+ * Categories are the browse control (they answer "what kind of thing is
+ * this?"). Raw topics are secondary detail and only appear once a query has
+ * told us which ones this corpus actually uses.
+ *
+ * The chips take their counts from the manifest on arrival, so browsing costs
+ * nothing. After a search they are redrawn with counts scoped to the query,
+ * which is the more useful number while refining a result.
  */
-function renderFacets() {
-  const cats = state.cats
+function renderCatChips(cats) {
+  const list = cats
     .map(([id, n]) => ({ id, n, label: state.catLabels[id] ?? id }))
     .sort((a, b) => b.n - a.n);
 
-  $("cats").innerHTML = cats
+  $("cats").innerHTML = list
     .map(
       (c) =>
         `<button type="button" class="cat" data-cat="${esc(c.id)}" aria-pressed="${state.activeCats.has(c.id)}">` +
         `${esc(c.label)}<span class="n">${c.n.toLocaleString()}</span></button>`,
     )
     .join("");
+}
+
+function renderFacets() {
+  renderCatChips(state.cats);
 
   const shown = state.tags.slice(0, 18);
   $("facets").innerHTML = shown
@@ -709,7 +645,6 @@ $("cats").addEventListener("click", (e) => {
   const id = btn.dataset.cat;
   if (state.activeCats.has(id)) state.activeCats.delete(id);
   else state.activeCats.add(id);
-  hideLanding();
   runSearch();
 });
 
@@ -817,9 +752,6 @@ $("f").addEventListener("submit", (e) => {
 let debounce;
 let wideDebounce;
 $("q").addEventListener("input", () => {
-  // Typing is asking a specific question, so the browse surface gets out of the
-  // way rather than sitting between the reader and the answer.
-  hideLanding();
   clearTimeout(debounce);
   debounce = setTimeout(runSearch, 200);
   // Ask GitHub too, but only once typing pauses. The unauthenticated search
@@ -828,6 +760,18 @@ $("q").addEventListener("input", () => {
   // deliberate query.
   clearTimeout(wideDebounce);
   wideDebounce = setTimeout(() => runWideSearch(), WIDE_DEBOUNCE_MS);
+});
+
+/**
+ * An example is an ordinary query: it fills the box and runs the same search a
+ * typed one would, rather than reaching into any special state.
+ */
+$("examples").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-example]");
+  if (!btn) return;
+  $("q").value = btn.dataset.example;
+  runSearch();
+  runWideSearch({ fresh: true });
 });
 
 /** "Show more" is delegated, because the button is re-rendered on every update. */
@@ -895,7 +839,11 @@ try {
     .catch(() => {});
 
   worker.postMessage({ type: "init", manifest: state.manifest });
-  runSearch();
+  // Nothing is searched on arrival. The category chips come out of the manifest
+  // we already have, so the page costs one small request and the prompt stands
+  // in until the reader types.
+  renderCatChips((state.manifest.categories ?? []).map((c) => [c.id, c.count ?? 0]));
+  showIdle(true);
 } catch (err) {
   $("meta").textContent = `Could not load index: ${err.message}. Run 'bun run build'.`;
 }

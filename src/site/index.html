@@ -495,89 +495,51 @@
   .wide .row { border-left: 3px solid var(--accent); }
   /* The "show more" control, rendered inside the on-demand section. */
   .wide #wide-more { margin-top: .8rem; }
-  /* ---------------------------------------------------------------- landing */
-  /* A shelf is a horizontal strip of small cards. Kept to one line of scroll on
-     purpose: this is meant to be glanced at, and a grid of everything is just a
-     longer version of the list below. */
-  #landing { margin: 0 0 28px; }
-  .shelf { margin: 0 0 22px; }
-  .shelf-head {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    margin: 0 0 8px;
+  /* ------------------------------------------------------------- idle state */
+  /* Shown when nothing has been typed. This is the entire first impression, so
+     it states what the search covers rather than trying to be a browsable
+     index: with no query the only honest ordering is by stars, and that leads
+     with documentation and "awesome" lists, which answers nothing. */
+  #idle { padding: 11vh 0 0; max-width: 660px; }
+  #idle h2 {
+    margin: 0 0 .45rem;
+    font-size: 1.4rem;
+    font-weight: 640;
+    letter-spacing: -.018em;
   }
-  .shelf-head h2 {
-    font-size: 0.95rem;
-    margin: 0;
-    letter-spacing: 0.01em;
+  #idle .lede {
+    margin: 0 0 1.4rem;
+    max-width: 48ch;
+    color: var(--fg-muted);
+    font-size: .95rem;
   }
-  .shelf-head .blurb {
-    font-size: 0.78rem;
-    color: var(--muted);
-    margin: 0;
-  }
-  /* The button is the whole point of the shelf: "show me more of this kind"
-     should not require working out how the facets work. */
-  .shelf-more {
-    margin-left: auto;
+
+  .examples { display: flex; gap: .4rem; flex-wrap: wrap; }
+  /* An example is just a query you did not have to type, so it should read as
+     a chip on the box rather than as a card. */
+  .ex {
     font: inherit;
-    font-size: 0.78rem;
-    padding: 2px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--line);
-    background: transparent;
-    color: var(--muted);
+    font-size: .85rem;
+    padding: .32rem .72rem;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-full);
     cursor: pointer;
-    white-space: nowrap;
+    box-shadow: var(--shadow-sm);
+    transition: color var(--fast), border-color var(--fast);
   }
-  .shelf-more:hover { color: var(--ink); border-color: var(--ink); }
-  .shelf-strip {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
-    gap: 8px;
+  .ex:hover {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--border) 45%, var(--accent));
   }
-  .card-mini {
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 10px;
-    background: var(--panel);
-    min-width: 0;
-  }
-  .card-mini a {
-    display: block;
-    font-size: 0.84rem;
-    font-weight: 600;
-    color: var(--ink);
-    text-decoration: none;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .card-mini a:hover { text-decoration: underline; }
-  .card-mini .desc {
-    font-size: 0.74rem;
-    color: var(--muted);
-    margin: 3px 0 0;
-    /* Two lines only: a shelf card is a teaser, and full descriptions turn the
-       strip into a wall of text. */
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .card-mini .foot {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 6px;
-    font-size: 0.7rem;
-    color: var(--muted);
-  }
-  .card-mini.is-gone { opacity: 0.5; }
-  .card-mini.is-gone a { text-decoration: line-through; text-decoration-thickness: 1px; }
-  @media (prefers-reduced-motion: reduce) {
-    .shelf-more, .card-mini a { transition: none; }
+
+  /* The box is the product, so it grows while it is the only thing on screen
+     and settles back once there are results to read. */
+  body:has(#idle:not([hidden])) input[type=search] {
+    font-size: 1.05rem;
+    padding-top: .72rem;
+    padding-bottom: .72rem;
   }
 
   /* Star counts drive the ranking, so show them rather than hiding the signal. */
@@ -738,11 +700,24 @@
   <div class="meta" id="meta" role="status" aria-live="polite">Loading index…</div>
 
   <!--
-    The landing surface. Hidden by default and revealed once the worker has
-    built it, so it never appears empty above the results on a slow load.
+    The prompt shown when nothing has been typed. There is no front page: this
+    is the whole first impression, so it says what the search covers and offers
+    a few starting points. Every example here is verified to return results by
+    src/publish/test-idle.ts, so none of them can dead-end on arrival.
   -->
-  <section id="landing" hidden aria-label="Browse">
-    <div id="shelves"></div>
+  <section id="idle" aria-label="Getting started">
+    <h2>Type what you want to find</h2>
+    <p class="lede">
+      Searches this index and GitHub at once, by owner, repository, title,
+      topic or description.
+    </p>
+    <div class="examples" id="examples" role="group" aria-label="Example searches">
+      <button type="button" class="ex" data-example="chess">chess</button>
+      <button type="button" class="ex" data-example="music">music</button>
+      <button type="button" class="ex" data-example="terminal">terminal</button>
+      <button type="button" class="ex" data-example="wasm">wasm</button>
+      <button type="button" class="ex" data-example="blog">blog</button>
+    </div>
   </section>
 
   <div id="results" class="list"></div>

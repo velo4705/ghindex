@@ -28,3 +28,27 @@ export const PATHS = {
 
 /** Absolute path, for tools that need one. */
 export const abs = (p: string) => resolve(root, p);
+
+/**
+ * URL path segment for a site page: sites/<owner>/<repo>.
+ *
+ * Lives here rather than in pages.ts because two places need to agree on it
+ * exactly. The generator writes pages to these paths, and health.ts compares
+ * them against the published index to catch pages left behind by a record that
+ * is no longer published. When the two disagreed, health could not tell an
+ * orphaned page from a real one.
+ *
+ * Repo names can be things like "ademcancertel.github.io", so after replacing
+ * unsafe characters the segment can still END in a dot ("ademcancertel."). A
+ * trailing dot is not a valid Windows directory name and mkdir fails, so dots
+ * are stripped from the end. Case is preserved because GitHub owners are
+ * case-insensitive but distinct users differ only by case on Pages.
+ */
+export function sitePath(owner: string, repo: string): string {
+  const safe = (s: string) => {
+    const cleaned = s.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^[.]+/, "").replace(/[.]+$/, "");
+    // Guard against a name that reduces to nothing (e.g. "...").
+    return cleaned.length ? cleaned : "_";
+  };
+  return `sites/${safe(owner)}/${safe(repo)}`;
+}

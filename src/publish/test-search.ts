@@ -79,24 +79,12 @@ for (const r of all) {
 console.log(`\n  every record findable by exact owner: ${unreachable === 0 ? "PASS" : `FAIL (${unreachable} unreachable)`}`);
 if (unreachable) failures++;
 
-// Candidate-shard logic must never exclude the correct shard.
-function candidateShards(q: string, m: any): string[] {
-  const first = q.trim().toLowerCase().charAt(0);
-  const ids = m.shards.map((s: any) => s.id);
-  if (!first) return ids;
-  const out = new Set(["_", "#"].filter((x) => ids.includes(x)));
-  const hit = ids.find((id) => id === first);
-  if (hit) out.add(hit);
-  return [...out];
-}
-let shardMiss = 0;
-for (const r of all) {
-  const initial = r.o.trim().toLowerCase().charAt(0);
-  const want = /[a-z]/.test(initial) ? initial : /[0-9]/.test(initial) ? "#" : "_";
-  if (!candidateShards(r.o.toLowerCase(), manifest).includes(want)) shardMiss++;
-}
-console.log(`  candidate-shard logic covers all owners: ${shardMiss === 0 ? "PASS" : `FAIL (${shardMiss} missed)`}`);
-if (shardMiss) failures++;
+// The shard-routing check that used to live here is gone, and deliberately so.
+// It verified that routing a query to the shard of owners sharing its first
+// letter never excluded the owner being searched for — a true statement about a
+// scheme that quietly answered with about a tenth of the matching rows, because
+// most queries are not matching on the owner's name. The worker now reads every
+// shard (see candidateShards there), and test-idle.ts covers the load policy.
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -191,89 +191,41 @@ async function runChecks(browser: string) {
   const count = await evalJs(`document.getElementById('count')?.textContent ?? ''`);
   check("manifest loaded, count shown", /\d/.test(count), count);
 
-  const meta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
-  check("worker returned results", /match/.test(meta), meta);
-
-  const rowCount = await evalJs(`document.querySelectorAll('.row').length`);
-  check("rows rendered", rowCount > 0, `${rowCount} rows`);
-
-  const facets = await evalJs(`document.querySelectorAll('.facet').length`);
-  check("tag facets rendered", facets > 0, `${facets} facets`);
-
-  // The landing is built in the search worker from the shards already in
-  // memory, so it must appear without any network call. That it does is the
-  // whole contract: a front page that only appears when the edge worker is
-  // reachable would be empty for most visits.
-  const landing = await evalJs(`(() => {
-    const el = document.getElementById('landing');
+  // Nothing is searched on arrival. That is the point of having no front page:
+  // an empty query would make the worker fetch every shard to build a list
+  // nobody asked for, so the page must arrive on the prompt with zero rows.
+  const arrival = await evalJs(`(() => {
+    const el = document.getElementById('idle');
     return {
-      hidden: el ? el.hidden : true,
-      shelves: document.querySelectorAll('#landing .shelf').length,
-      cards: document.querySelectorAll('#landing .card-mini').length,
-      firstLabel: document.querySelector('#landing .shelf-head h2')?.textContent ?? '',
+      idleHidden: el ? el.hidden : true,
+      rows: document.querySelectorAll('.row').length,
+      cats: document.querySelectorAll('.cat').length,
+      examples: document.querySelectorAll('#examples .ex').length,
+      meta: document.getElementById('meta')?.textContent ?? '',
     };
   })()`);
-  check("landing is shown on arrival", landing?.hidden === false, JSON.stringify(landing));
-  check("landing has shelves", landing?.shelves >= 3, `${landing?.shelves} shelves`);
-  check("landing has cards", landing?.cards >= 12, `${landing?.cards} cards`);
-  check("a shelf is labelled", (landing?.firstLabel ?? "").length > 0, landing?.firstLabel);
+  check("the prompt is shown on arrival", arrival?.idleHidden === false, JSON.stringify(arrival));
+  check("no rows are rendered before a query", arrival?.rows === 0, `${arrival?.rows} rows`);
+  check("category chips come from the manifest", arrival?.cats >= 5, `${arrival?.cats} chips`);
+  check("example queries are offered", arrival?.examples >= 3, `${arrival?.examples} examples`);
+  check("the status line claims no matches yet", !/match/.test(arrival?.meta ?? ""), arrival?.meta);
 
-  // Cards must be real links, not placeholders.
-  const cardLinks = await evalJs(
-    `Array.from(document.querySelectorAll('#landing .card-mini a')).filter(a => /^https:\\/\\/[\\w.-]+\\.github\\.io\\//.test(a.getAttribute('href') || '')).length`,
-  );
-  check("every landing card links somewhere real", cardLinks === landing?.cards, `${cardLinks}/${landing?.cards}`);
-
-  // Type a query and confirm filtering narrows results.
-  await evalJs(`(() => { const q=document.getElementById('q'); q.value='portfolio';
-    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
-  await Bun.sleep(1200);
-  const afterMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
-  const afterRows = await evalJs(`document.querySelectorAll('.row').length`);
-  check("search filters results", afterRows > 0 && /match/.test(afterMeta), afterMeta);
-
-  // Asking a specific question should get the browse surface out of the way.
-  const landingAfterTyping = await evalJs(`document.getElementById('landing')?.hidden`);
-  check("typing hides the landing shelves", landingAfterTyping === true, `hidden=${landingAfterTyping}`);
-
-  // Tag facet. Clear the search box FIRST: otherwise the facet combines with a
-  // typed query and a narrow intersection can legitimately yield 0 matches,
-  // which made an earlier version of this test fail spuriously.
-  await evalJs(`(() => { const q=document.getElementById('q'); q.value='';
-    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
-  await Bun.sleep(1000);
-  const beforeFacet = await evalJs(`document.querySelectorAll('.row').length`);
-  const facetTag = await evalJs(`document.querySelector('.facet')?.dataset.tag ?? ''`);
-  await evalJs(`(() => { const f=document.querySelector('.facet'); if(!f) return 0; f.click(); return 1; })()`);
-  await Bun.sleep(1200);
-  const facetMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
-  const pressedNow = await evalJs(`[...document.querySelectorAll('.facet[aria-pressed=true]')].map(f=>f.dataset.tag).join(',')`);
-  check("tag facet filters", new RegExp("[1-9]\\d* match").test(facetMeta) && pressedNow === facetTag,
-    `${facetMeta} (pressed=${pressedNow || 'none'})`);
-
-  // Clear the tag facet again so categories are tested independently.
-  await evalJs(`(() => { document.querySelectorAll('.facet[aria-pressed=true]').forEach(f=>f.click()); return 1; })()`);
-  await Bun.sleep(1000);
-
-  // Category facets (M4).
-  const catCount = await evalJs(`document.querySelectorAll('.cat').length`);
-  check("category facets render", catCount >= 8, `${catCount} categories`);
-
+  // A category chip with no text typed is the one browse path that survives, and
+  // it is the only interaction that legitimately loads the whole index.
   const catLabels = await evalJs(`[...document.querySelectorAll('.cat')].map(c=>c.childNodes[0]?.textContent?.trim()).join(' | ')`);
   check("categories use human labels", /Portfolio/.test(catLabels), catLabels.slice(0, 90));
 
   const catId = await evalJs(`document.querySelector('.cat')?.dataset.cat ?? ''`);
-  const catCountBefore = await evalJs(`document.getElementById('meta').textContent`);
   await evalJs(`(() => { const c=document.querySelector('.cat'); if(!c) return 0; c.click(); return 1; })()`);
-  await Bun.sleep(1200);
+  await Bun.sleep(1500);
   const catMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
+  const catRows = await evalJs(`document.querySelectorAll('.row').length`);
   const catPressed = await evalJs(`[...document.querySelectorAll('.cat[aria-pressed=true]')].map(c=>c.dataset.cat).join(',')`);
-  check("category facet filters", new RegExp("[1-9]\\d* match").test(catMeta) && catPressed === catId,
+  check("a category browses with no query typed", catRows > 0 && /match/.test(catMeta) && catPressed === catId,
     `${catMeta} (pressed=${catPressed || 'none'})`);
 
-  // Category chips must appear on rendered results.
-  const chips = await evalJs(`document.querySelectorAll('.cat-chip').length`);
-  check("results show category chips", chips > 0, `${chips} chips`);
+  const idleAfterCat = await evalJs(`document.getElementById('idle')?.hidden`);
+  check("the prompt is gone once there are results", idleAfterCat === true, `hidden=${idleAfterCat}`);
 
   // Category filter must actually narrow the set. Parse only the leading count
   // (strip the " (showing N)" suffix, which would otherwise concatenate digits).
@@ -283,8 +235,60 @@ async function runChecks(browser: string) {
   check("category filter narrows results", narrowed > 0 && narrowed < 5739,
     `${narrowed} of 5,739`);
 
+  // Category chips must appear on rendered results.
+  const chips = await evalJs(`document.querySelectorAll('.cat-chip').length`);
+  check("results show category chips", chips > 0, `${chips} chips`);
+
   await evalJs(`(() => { document.querySelectorAll('.cat[aria-pressed=true]').forEach(c=>c.click()); return 1; })()`);
   await Bun.sleep(1000);
+
+  // An example chip is an ordinary query, not a special path.
+  await evalJs(`(() => { document.querySelector('#examples .ex')?.click(); return 1; })()`);
+  await Bun.sleep(1800);
+  const exMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
+  const exRows = await evalJs(`document.querySelectorAll('.row').length`);
+  check("an example query returns results", exRows > 0 && /match/.test(exMeta), exMeta);
+
+  // Type a query and confirm filtering narrows results.
+  await evalJs(`(() => { const q=document.getElementById('q'); q.value='portfolio';
+    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
+  await Bun.sleep(1500);
+  const afterMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
+  const afterRows = await evalJs(`document.querySelectorAll('.row').length`);
+  check("search filters results", afterRows > 0 && /match/.test(afterMeta), afterMeta);
+
+  // Tag facets only exist once a query has told us which topics this corpus
+  // uses, so they are asserted after a search rather than on arrival.
+  const facets = await evalJs(`document.querySelectorAll('.facet').length`);
+  check("tag facets render after a query", facets > 0, `${facets} facets`);
+
+  // Clearing the box must return to the prompt rather than to a full-index list.
+  await evalJs(`(() => { const q=document.getElementById('q'); q.value='';
+    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
+  await Bun.sleep(1200);
+  const idleAgain = await evalJs(`(() => ({
+    hidden: document.getElementById('idle')?.hidden,
+    rows: document.querySelectorAll('.row').length,
+    facets: document.querySelectorAll('.facet').length,
+  }))()`);
+  check("clearing the box returns to the prompt", idleAgain?.hidden === false, JSON.stringify(idleAgain));
+  check("and renders no rows", idleAgain?.rows === 0, `${idleAgain?.rows} rows`);
+  check("and drops the stale tag facets", idleAgain?.facets === 0, `${idleAgain?.facets} facets`);
+
+  // Tag facet, applied on top of a deliberately broad query. Tag chips only
+  // exist while a query is active, and a narrow query can intersect a topic
+  // down to zero matches, which made an earlier version of this test fail
+  // spuriously.
+  await evalJs(`(() => { const q=document.getElementById('q'); q.value='a';
+    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
+  await Bun.sleep(1500);
+  const facetTag = await evalJs(`document.querySelector('.facet')?.dataset.tag ?? ''`);
+  await evalJs(`(() => { const f=document.querySelector('.facet'); if(!f) return 0; f.click(); return 1; })()`);
+  await Bun.sleep(1500);
+  const facetMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
+  const pressedNow = await evalJs(`[...document.querySelectorAll('.facet[aria-pressed=true]')].map(f=>f.dataset.tag).join(',')`);
+  check("tag facet filters", new RegExp("[1-9]\\d* match").test(facetMeta) && pressedNow === facetTag,
+    `${facetMeta} (pressed=${pressedNow || 'none'})`);
 
   // M7: report / claim links. These live in ROW view, so they must be checked
   // BEFORE switching to grid -- in grid the .row elements do not exist, and

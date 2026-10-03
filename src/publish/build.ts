@@ -11,9 +11,13 @@
  *  - SHORT FIELD NAMES. At ~100k records, key names are a real fraction of the
  *    payload. u/o/r/t/d/g is used instead of url/owner/repo/title/...
  *
- *  - SHARD BY OWNER INITIAL. A query for a username can then load only the one
- *    shard that can possibly match, instead of the whole index. The manifest
- *    records which shards exist and how big they are.
+ *  - SHARD BY OWNER INITIAL. This does NOT let a query read one shard. Rows are
+ *    bucketed by the owner's first letter, and most queries are matching on a
+ *    topic, a title or a description instead, so routing on the query's first
+ *    letter returned about a tenth of the matches (measured: "react" 49 of 379).
+ *    The client reads every shard; what sharding still buys is a stable unit of
+ *    change, so a corpus edit rewrites a few files rather than one giant one.
+ *    The manifest records which shards exist and how big they are.
  *
  *  - CHANGED-SHARDS-ONLY. Rewriting every shard on every run makes deploys
  *    huge and git diffs useless. We hash each shard and only write the ones

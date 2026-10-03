@@ -353,7 +353,7 @@ export async function verifyLiveness(url, opts = {}) {
 /**
  * Check several sites in one request, for a page that is already on screen.
  *
- * The landing page shows dozens of cards. Asking about each one separately would
+ * A result list can show dozens of rows. Asking about each one separately would
  * be dozens of Worker invocations, each of which would then be a cold cache
  * entry for the next visitor as well. One batch is one request and warms the
  * same per-URL cache entries, so the second person to load the page gets hits.

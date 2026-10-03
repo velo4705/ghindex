@@ -48,8 +48,11 @@ jobs:
       - name: Edge worker
         run: bun run worker/test-worker.ts
 
-      - name: Landing page shelves
-        run: bun run src/publish/test-landing.ts
+      # Guards the load policy the search-only page depends on: nothing is
+      # fetched until a query needs it, and every example query in the prompt
+      # returns something.
+      - name: Front end prompt and lazy loading
+        run: bun run src/publish/test-idle.ts
 
       - name: Star quota
         run: bun run src/publish/test-star-quota.ts

@@ -18,7 +18,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { PATHS } from "../paths";
+import { PATHS, sitePath } from "../paths";
 
 const args = process.argv.slice(2);
 const argNum = (flag: string, dflt: number) => {
@@ -230,6 +230,67 @@ if (existsSync(PATHS.corpus)) {
   });
   if (neverProbed.length === 0) ok("every published record has been probed at least once");
   else err(`${neverProbed.length} published records were never probed`);
+}
+
+// ---- generated pages match the published index ----
+/**
+ * Every page on disk should belong to a record that is still published.
+ *
+ * The per-star-band quota is what makes this possible to get wrong: it drops
+ * records from the index, and pages.ts only regenerates what it is told to, so
+ * a quota change leaves the pages of every dropped record sitting in the repo
+ * as thin content that is still linked from the previous sitemap. That is
+ * exactly what happened when the 600-per-band cap landed — thousands of pages
+ * for sites the index no longer lists.
+ *
+ * Nothing else caught it. test-pages.ts checks that sitemap URLs resolve to
+ * real files, which is the opposite direction and is satisfied by orphans just
+ * as well. A dropped record leaves a page that exists and a sitemap entry that
+ * points at it, so both directions look healthy while the two disagree.
+ *
+ * This is checked rather than left to `bun run publish` because the fix for it
+ * is a full page regeneration, and the point is to notice before shipping.
+ */
+if (existsSync(`${PATHS.site}/sites`)) {
+  const expected = new Set<string>();
+  for (const s of manifest.shards) {
+    const rows = readJson(`${PATHS.data}/${s.file}`) as Array<{ o?: string; r?: string }>;
+    for (const row of rows ?? []) {
+      if (row?.o && row?.r) expected.add(sitePath(row.o, row.r));
+    }
+  }
+
+  const orphans: string[] = [];
+  const walk = (dir: string, prefix = "") => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(`${dir}/${entry.name}`, rel);
+      // Prefixed with "sites/" so a walked path is directly comparable to
+      // sitePath() output rather than to the same path missing its first segment.
+      else if (entry.name === "index.html") orphans.push(`sites/${rel.replace(/\/index\.html$/, "")}`);
+    }
+  };
+  walk(`${PATHS.site}/sites`);
+
+  // Paths come from sitePath, the same helper pages.ts writes with, rather than
+  // from each record's URL: a Pages URL is not reliably owner.github.io/repo.
+  // Real examples in this corpus are /arduino-cli/latest/, /chess-engine/docs/
+  // book/, /incubator-weex-ui/#/ and a bare github.io root. It also sanitises the
+  // path segment, so the two have to agree on that too or nothing matches.
+  const stale = orphans.filter((p) => !expected.has(p));
+  if (stale.length === 0) {
+    ok(`every generated page has a published record (${orphans.length} pages)`);
+  } else {
+    err(
+      `${stale.length} generated page(s) have no published record — ` +
+        `run 'bun run publish' and commit the result: ${stale.slice(0, 3).join("; ")}`,
+    );
+  }
+
+  // The other direction: a record with no page is a search result that 404s.
+  const missing = [...expected].filter((p) => !orphans.includes(p));
+  if (missing.length === 0) ok("every published record has a generated page");
+  else err(`${missing.length} published record(s) have no page: ${missing.slice(0, 3).join("; ")}`);
 }
 
 // ---- categories ----
