@@ -260,47 +260,35 @@ async function runChecks(browser: string) {
   const picker = await evalJs(`JSON.stringify((() => ({
     tags: document.querySelectorAll('#taglist .tagbtn').length,
     labels: [...document.querySelectorAll('#taglist .tagbtn')].map(b=>b.textContent).slice(0,6),
-    heading: (document.querySelector('.tagpick h2')||{}).textContent||'',
-    collapsed: document.getElementById('taglist').classList.contains('collapsed'),
-    moreLabel: (document.getElementById('tagmore')||{}).textContent||'',
-    // Height in lines is what actually matters: a collapsed strip must not push
-    // the results down the page.
+    heading: document.querySelectorAll('.tagpick h2, .tagpick h3').length,
     height: Math.round(document.getElementById('taglist').getBoundingClientRect().height),
   }))())`);
   const p = JSON.parse(String(picker));
   check("the tag picker is populated", p.tags >= 20, `${p.tags} tags`);
-  check("the picker has a heading", (p.heading || "").length > 0, p.heading);
-
-  // The picker is the alternative to typing, so it has to be short enough to
-  // scan. A list of every GitHub topic is not a browsing control.
-  check("the picker is short enough to scan", p.tags <= 120, `${p.tags} tags`);
+  check(
+    "the picker is short enough to scan",
+    p.tags <= 120,
+    `${p.tags} tags`,
+  );
   check(
     "no technology-only tags in the picker",
     !/^(react|javascript|typescript|css|html|python|vue)$/.test((p.labels || []).join(",")),
     (p.labels || []).join(", "),
   );
 
-  // It must not cost the reader their results. Eighty chips in full view pushed
-  // them roughly 900px down, so the collapsed state is pinned here.
-  check("the picker starts collapsed", p.collapsed === true);
-  check("and occupies about one line", p.height <= 40, `${p.height}px tall`);
-  check("with a control to expand it", /all \d+/.test(p.moreLabel || ""), p.moreLabel);
+  // An uppercase letterspaced "BROWSE BY TOPIC" heading was tried and removed:
+  // a dated label for a control nobody asked about, sitting between the reader
+  // and the search box.
+  check("the picker carries no heading", p.heading === 0, `${p.heading} headings`);
 
-  await evalJs(`document.getElementById('tagmore')?.click()`);
-  await Bun.sleep(300);
-  const expanded = await evalJs(`(() => {
-    const el = document.getElementById('taglist');
-    return JSON.stringify({
-      collapsed: el.classList.contains('collapsed'),
-      height: Math.round(el.getBoundingClientRect().height),
-      label: (document.getElementById('tagmore')||{}).textContent||'',
-    });
-  })()`);
-  const x = JSON.parse(String(expanded));
-  check("expanding it reveals the full list", x.collapsed === false && x.height > p.height, `${x.height}px`);
-  check("and the control offers to collapse again", (x.label || "").trim() === "fewer", x.label);
-  await evalJs(`document.getElementById('tagmore')?.click()`);
-  await Bun.sleep(200);
+  // It must stay cheap in vertical terms, or it pushes the results — the thing
+  // the visitor came for — down the page. Small chips wrapping into a block is
+  // the intended shape; large chips filling half the viewport is not.
+  check("the picker stays out of the way vertically", p.height <= 260, `${p.height}px tall`);
+  check(
+    "and sits above the fold on a laptop",
+    await evalJs(`Math.round(document.getElementById('taglist').getBoundingClientRect().bottom)`) <= 760,
+  );
 
   // ------------------------------------------------------------- a live search
 

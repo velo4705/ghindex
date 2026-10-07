@@ -370,31 +370,28 @@ export const BROWSE_TAGS = [
 
   // Making and design.
   "design-system", "ui-kit", "components", "animation", "generative", "webgl",
-  "digital-art", "shader", "creative-coding", "inspiration", "gallery",
+  "digital-art", "creative-coding", "gallery",
 
   // Data and dashboards.
-  "dashboard", "dataviz", "charts", "analytics", "monitoring", "grafana",
-  "data-visualization", "reporting",
+  "dashboard", "dataviz", "charts", "analytics", "monitoring",
 
   // Reference and study material.
   "cheatsheet", "tutorial", "handbook", "roadmap", "interview-prep", "leetcode",
-  "algorithms", "data-structures", "course", "textbook", "lecture-notes", "notes",
+  "algorithms", "data-structures", "course", "textbook", "lecture-notes",
 
   // Tools people actually use.
   "cli", "editor", "markdown-editor", "unit-converter", "regex", "downloader",
-  "json-formatter", "productivity", "self-hosted", "automation",
-  "web-scraper", "note-taking", "spreadsheet",
+  "json-formatter", "productivity", "self-hosted", "automation", "note-taking",
+  "spreadsheet",
 
   // Games by kind, because "games" alone buries the specific ones.
-  "game-jam", "roguelike", "platformer", "puzzle", "rpg", "tetris", "chess",
-  "phaser", "godot", "unity", "itch",
+  "game-jam", "roguelike", "platformer", "puzzle", "tetris", "chess", "godot",
 
   // Writing.
-  "writing", "thoughts", "tech-blog", "articles", "jekyll", "hugo", "ghost",
+  "jekyll", "hugo", "ghost", "writing", "tech-blog", "articles",
 
   // Libraries and frameworks.
   "library", "framework", "boilerplate", "starter", "sdk", "npm-package",
-  "build-tools", "bundler", "state-management", "mobile-development",
 ];
 
 /**

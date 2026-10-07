@@ -121,13 +121,27 @@
      someone else's site, and the only thing this page offers is a way to find
      one. So the search is the page, and it is given the room to be the page.
   */
+  /*
+     The page is one centred column, but two widths.
+
+     The hero — title, subtitle, box, help — is capped at a comfortable measure
+     so the search field stays a readable length rather than stretching the width
+     of the window. The tag band below it is allowed to run wider, which is both
+     honest about what it is (a broad set of small options, not prose) and what
+     keeps it short: 83 chips across 680px wrap into fourteen rows, and across
+     860px into nine.
+  */
   main {
-    max-width: var(--maxw);
+    max-width: 860px;
     margin: 0 auto;
-    padding: clamp(3rem, 14vh, 8rem) clamp(1rem, 5vw, 1.5rem) 4rem;
+    padding: clamp(3rem, 12vh, 6.5rem) clamp(1rem, 5vw, 1.5rem) 4rem;
   }
 
-  .hero { text-align: center; }
+  .hero {
+    text-align: center;
+    max-width: 680px;
+    margin: 0 auto;
+  }
 
   h1 {
     margin: 0;
@@ -138,9 +152,9 @@
   }
 
   .tagline {
-    margin: .55rem 0 0;
+    margin: .6rem 0 0;
     color: var(--fg-muted);
-    font-size: clamp(.95rem, 2.4vw, 1.05rem);
+    font-size: clamp(1rem, 2.4vw, 1.1rem);
   }
 
   /* ---------------------------------------------------------- search */
@@ -184,12 +198,16 @@
      guess: that results arrive as they type rather than on submit, and that
      what comes back is live rather than a stored index. Both are true and both
      change what the page is, so neither is decoration.
+
+     --fg-muted rather than --fg-subtle: at 0.82rem this is body text, and
+     --fg-subtle only reaches ~3.4:1 on the light background, which is below the
+     AA threshold for text this size.
   */
   .help {
-    margin: .85rem auto 0;
-    max-width: 46ch;
-    color: var(--fg-subtle);
-    font-size: .82rem;
+    margin: .9rem auto 0;
+    max-width: 44ch;
+    color: var(--fg-muted);
+    font-size: .84rem;
   }
 
   /* ---------------------------------------------------------- tag picker */
@@ -201,47 +219,39 @@
      of which lead to nothing. This is the set of tags that reliably mean
      something, so it is short enough to scan.
   */
-  .tagpick { margin-top: 2.25rem; }
-
-  .tagpick > h2 {
-    margin: 0 0 .7rem;
-    font-size: .72rem;
-    font-weight: 600;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    color: var(--fg-subtle);
-    text-align: center;
-  }
+  .tagpick { margin-top: 2.5rem; }
 
   /*
-     The picker is a single wrapped strip, not a grid of cards. Eighty-odd
-     equal-weight chips would read as the page's main content, which is the
-     opposite of the truth: it is a convenience below a search box, and the
-     results are what the visitor came for.
+     The picker is a quiet centred cloud and nothing else.
+
+     Three earlier shapes were wrong and each was caught by looking at the
+     rendered page rather than by a failing test:
+
+     - an uppercase letterspaced "BROWSE BY TOPIC" heading: a dated label that
+       announced a control the reader had not asked about, and "browse" was never
+       accurate since picking a chip is one query, not a walk through results;
+     - full-weight chips, which made the picker the loudest thing on a page whose
+       actual subject is the search box;
+     - collapsing the list to one line behind an "all 83" control, which truncated
+       mid-row and read as a rendering fault rather than a choice.
+
+     So: no heading, no truncation, and low-contrast chips that hold the eye at
+     the search box. Height is not the problem it was with large chips — small
+     ones wrap into a block that reads as deliberate.
   */
   .taglist {
     display: flex;
     flex-wrap: wrap;
-    gap: .3rem;
+    gap: .25rem .3rem;
     justify-content: center;
   }
 
-  /*
-     Collapsed to one line by default, with the rest behind a toggle.
-
-     Every tag on one screen was tried and it was the wrong shape: it pushed the
-     results roughly 900px down the page, so a visitor who searched had to scroll
-     past 83 buttons to reach their answer. Showing the first handful and letting
-     the rest be asked for keeps the picker useful without making it the page.
-  */
-  .taglist.collapsed { max-height: 2.1rem; overflow: hidden; }
-
   .tagbtn {
-    padding: .22rem .6rem;
+    padding: .15rem .5rem;
     font: inherit;
-    font-size: .78rem;
+    font-size: .74rem;
     line-height: 1.5;
-    color: var(--fg-subtle);
+    color: var(--fg-muted);
     background: transparent;
     border: 1px solid var(--border-soft);
     border-radius: var(--r-full);
@@ -259,20 +269,6 @@
     color: var(--accent-fg);
     font-weight: 600;
   }
-
-  .tagmore {
-    padding: .22rem .6rem;
-    font: inherit;
-    font-size: .78rem;
-    line-height: 1.5;
-    color: var(--fg-subtle);
-    background: transparent;
-    border: 1px dashed var(--border);
-    border-radius: var(--r-full);
-    cursor: pointer;
-    transition: color var(--fast), border-color var(--fast);
-  }
-  .tagmore:hover { color: var(--accent); border-color: var(--accent); }
 
   /* ---------------------------------------------------------- results */
 
@@ -425,7 +421,7 @@
   [hidden] { display: none !important; }
 
   footer {
-    max-width: var(--maxw);
+    max-width: 860px;
     margin: 0 auto;
     padding: 2rem clamp(1rem, 5vw, 1.5rem) 3rem;
     border-top: 1px solid var(--border-soft);
@@ -456,7 +452,7 @@
 
   <div class="hero">
     <h1>ghindex</h1>
-    <p class="tagline">Search every GitHub Pages site on GitHub.</p>
+    <p class="tagline">Live search of GitHub Pages sites.</p>
 
     <form role="search" class="searchbox" id="f">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
@@ -480,10 +476,14 @@
     looking at a thousand React sites and no portfolio. Clicking one searches for
     it, and it stays selected so you can tell what you are looking at.
   -->
-  <!-- The list starts collapsed to one line; "all N" expands it. -->
+  <!--
+    Topic picker. Every tag here describes what a site *is* rather than what it
+    was built with: browsing by technology is how you end up looking at a thousand
+    React sites and no portfolio. Clicking one searches for it, and clicking it
+    again clears the selection.
+  -->
   <section class="tagpick" aria-label="Browse by topic">
-    <h2>Browse by topic</h2>
-    <div class="taglist collapsed" id="taglist"></div>
+    <div class="taglist" id="taglist"></div>
   </section>
 
   <div id="results"></div>

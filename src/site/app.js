@@ -241,16 +241,9 @@ async function renderTagPicker() {
       // The picker is a convenience; a failure to load it must not break search.
       return;
     }
-    host.innerHTML =
-      tags
-        .map((t) => `<button type="button" class="tagbtn" data-tag="${esc(t)}" aria-pressed="false">${esc(t)}</button>`)
-        .join("") +
-      `<button type="button" class="tagmore" id="tagmore" data-total="${tags.length}"
-         aria-expanded="false" aria-controls="taglist">all ${tags.length}</button>`;
-    // Collapsed by default. Eighty chips in full view pushed the results far
-    // enough down the page that a visitor who searched had to scroll past the
-    // whole picker to reach the answer.
-    host.classList.add("collapsed");
+    host.innerHTML = tags
+      .map((t) => `<button type="button" class="tagbtn" data-tag="${esc(t)}" aria-pressed="false">${esc(t)}</button>`)
+      .join("");
   }
 
   for (const btn of host.querySelectorAll(".tagbtn")) {
@@ -263,16 +256,6 @@ async function renderTagPicker() {
  * so the control is a toggle rather than a one-way door.
  */
 $("taglist").addEventListener("click", (e) => {
-  // The expander shares the container, so it is handled first: it has no
-  // data-tag and would otherwise fall through and clear the selection.
-  if (e.target.closest("#tagmore")) {
-    const host = $("taglist");
-    const open = host.classList.toggle("collapsed") === false;
-    $("tagmore").setAttribute("aria-expanded", String(open));
-    $("tagmore").textContent = open ? "fewer" : `all ${$("tagmore").dataset.total ?? ""}`.trim();
-    return;
-  }
-
   const btn = e.target.closest(".tagbtn");
   if (!btn) return;
   const tag = btn.dataset.tag;

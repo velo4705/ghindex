@@ -114,13 +114,30 @@ check("it loads the curated list", /BROWSE_TAGS/.test(app));
   check("selecting a tag is reversible", /state\.tag === tag \? "" : tag/.test(app));
 
 // Selecting a tag must NOT expand the picker. It did, and the screenshot showed
-// why that was wrong: the 83 chips reappeared and pushed the results the visitor
-// had just asked for a full screen down the page. What tells them the selection
-// took effect is the accent on the chip and the "topic: x" line in the summary.
+  // why that was wrong: the 83 chips reappeared and pushed the results the visitor
+  // had just asked for a full screen down the page. What tells them the selection
+  // took effect is the accent on the chip and the "topic: x" line in the summary.
+  check(
+    "the picker has no collapse machinery",
+    !/collapsed|tagmore/.test(app) && !/collapsed|tagmore/.test(html),
+    "expanding on select pushed the results down the page",
+  );
+
+// An uppercase letterspaced "BROWSE BY TOPIC" heading shipped and was removed:
+// a dated label for a control the reader did not ask about.
+check("the picker carries no heading", !/<h2[^>]*>\s*Browse/i.test(html));
+
+// The copy has to be honest. "every" was a claim the API cannot support: search
+// caps at 1,000 results per query and only sees repositories that carry topics,
+// so the page can never have covered every Pages site.
 check(
-  "selecting a tag leaves the picker collapsed",
-  !/classList\.remove\("collapsed"\)/.test(app),
-  "expanding on select pushed the results down the page",
+  "the tagline does not overclaim",
+  !/every/i.test(html.match(/class="tagline"[^>]*>([^<]*)</)?.[1] ?? ""),
+  html.match(/class="tagline"[^>]*>([^<]*)</)?.[1],
+);
+check(
+  "the tagline does not say GitHub twice",
+  !/GitHub[^<]*GitHub/i.test(html.match(/class="tagline"[^>]*>([^<]*)</)?.[1] ?? ""),
 );
 
 // A picker tag must search by topic rather than as free text: "portfolio" as a
