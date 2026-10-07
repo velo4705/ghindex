@@ -104,102 +104,144 @@ function stubPool(pool: unknown[], total: number, perPage = 100) {
   return calls;
 }
 
-const { searchGitHub, MAX_PAGES_FOR_TEST } = await import("../../src/site/github-search.js");
+const { searchGitHub, pageCount, MAX_PAGES_FOR_TEST } = await import("../../src/site/github-search.js");
 
 // A pool of 250 Pages items plus non-Pages noise, which must be filtered out.
 const pool: unknown[] = [];
 for (let i = 0; i < 250; i++) pool.push(item(`owner${i}/repo${i}`, 500 - i));
 for (let i = 0; i < 50; i++) pool.push(item(`nope${i}/lib${i}`, 10000, false));
 
+console.log("=== one page costs exactly one call ===");
+
 {
+  // The bug this replaced: asking for page 3 used to request pages 1, 2 and 3 and
+  // return all three. On a rate limit shared by every visitor that made paging
+  // cost three times what it says on the label, and made the second click on the
+  // control cost three again to rebuild a list the reader already had.
   const calls = stubPool(pool, 7354);
-  const r = await searchGitHub("portfolio", { pages: 3 });
+  const r = await searchGitHub("portfolio", { page: 3 });
   globalThis.fetch = realFetch;
 
-  eq("one page requests exactly one call", String(calls.length), "3");
-  check("pages requested are 1..3",
-    [1, 2, 3].every((p) => calls.some((c) => c.url.includes(`page=${p}`))));
+  eq("page 3 costs exactly one call", String(calls.length), "1");
+  check("and it is page 3 that was requested",
+    calls.every((c) => c.url.includes("page=3")),
+    calls.map((c) => c.url).join(", "));
   check("per_page is 100, not 30", calls.every((c) => c.url.includes("per_page=100")));
   check("sorted by stars, descending",
     r.results.every((x, i, a) => i === 0 || a[i - 1].stars >= x.stars));
   check("has_pages=false rows are dropped",
     r.results.every((x) => !x.full_name.startsWith("nope")));
-  check("pagesFetched matches requests", r.pagesFetched === 3 ? "ok" : `got ${r.pagesFetched}`);
-  check("hasMore is true when GitHub has more",
-    r.hasMore ? "ok" : "got false");
+  eq("the result names its page", String(r.page), "3");
+  // Page 3 of a 250-item pool is the tail, so fewer than 100 rows come back.
+  check("only that page's rows come back", r.results.length === 50 ? "ok" : `got ${r.results.length}`);
 }
 
 {
-  // Fewer pages than the result set: still one call per page requested.
+  // Same pool, page 1: a different page, and still one call.
   const calls = stubPool(pool, 7354);
-  const r = await searchGitHub("portfolio", { pages: 1 });
+  const r = await searchGitHub("portfolio", { page: 1 });
   globalThis.fetch = realFetch;
-  eq("pages=1 costs one call", String(calls.length), "1");
-  check("one page returns ~100 rows", r.results.length === 100 ? "ok" : `got ${r.results.length}`);
+  eq("page 1 costs one call", String(calls.length), "1");
+  check("one page returns 100 rows", r.results.length === 100 ? "ok" : `got ${r.results.length}`);
 }
 
 {
-  // A short result set must not keep asking: stop as soon as GitHub is exhausted.
-  const small = [item("a/one", 5), item("a/two", 4)];
-  const calls = stubPool(small, 2);
-  const r = await searchGitHub("nothing", { pages: 10 });
+  // Paging must not refetch: going 1 then 2 is two calls total, not three.
+  const calls = stubPool(pool, 7354);
+  await searchGitHub("portfolio", { page: 1 });
+  await searchGitHub("portfolio", { page: 2 });
   globalThis.fetch = realFetch;
-  check("stops early on a short result set", calls.length === 1 ? "ok" : `made ${calls.length} calls`);
-  check("hasMore false when everything is loaded", r.hasMore ? "got true" : "ok");
+  eq("two pages visited cost two calls", String(calls.length), "2");
 }
 
-{
-  // Rate limiting mid-pagination must keep earlier pages instead of losing all.
-  const calls: Call[] = [];
-  let n = 0;
-  globalThis.fetch = (async (url: string) => {
-    calls.push({ url });
-    n++;
-    if (n === 1) {
-      const page = Number(new URL(url).searchParams.get("page") ?? "1");
-      return new Response(
-        JSON.stringify({ total_count: 5000, items: pool.slice(0, 100) }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    }
-    const reset = Math.floor(Date.now() / 1000) + 42;
-    return new Response("rate limited", {
-      status: 403,
-      headers: { "x-ratelimit-reset": String(reset) },
-    });
-  }) as typeof fetch;
+console.log("=== how many pages exist ===");
 
-  const r = await searchGitHub("portfolio", { pages: 5 });
+{
+  // GitHub reports millions while refusing past 1,000 results, so the honest
+  // count is the reachable one. A pager showing 73,540 pages would be a lie.
+  check("page count is the reachable one, not the reported total",
+    pageCount(7354) === MAX_PAGES_FOR_TEST, `got ${pageCount(7354)}`);
+  check("a short result set is one page", pageCount(40) === 1, `got ${pageCount(40)}`);
+  check("exactly 100 results is one page", pageCount(100) === 1, `got ${pageCount(100)}`);
+  check("101 results is two pages", pageCount(101) === 2, `got ${pageCount(101)}`);
+  check("no results is no pages", pageCount(0) === 0, `got ${pageCount(0)}`);
+
+  const calls = stubPool(pool, 7354);
+  const r = await searchGitHub("portfolio", {});
   globalThis.fetch = realFetch;
-  check("rate limit keeps earlier pages", r.results.length === 100 ? "ok" : `got ${r.results.length}`);
-  check("rate limit reports a partial, not a hard error",
-    r.partial ? "ok" : "no partial set");
-  check("rate limit is not treated as fatal", r.error ? `error: ${r.error}` : "ok");
+  eq("the response reports its page count", String(r.pages), String(MAX_PAGES_FOR_TEST));
 }
 
+console.log("=== page numbers are clamped ===");
+
 {
-  // A pool that never runs out, so the clamp is what stops pagination rather
-  // than a short result set. A finite pool empties on page 4 and would make
-  // this assertion pass for the wrong reason.
+  // GitHub returns HTTP 422 for page 11 of a search, so page 11 must never be
+  // requested no matter what the caller asks for.
+  const calls = stubPool(pool, 7354);
+  const r = await searchGitHub("portfolio", { page: 99 });
+  globalThis.fetch = realFetch;
+  eq("page 99 still costs one call", String(calls.length), "1");
+  check("clamped to the last real page", r.page === MAX_PAGES_FOR_TEST, `got ${r.page}`);
+  check("never requests page 11", !calls.some((c) => c.url.includes("page=11")) ? "ok" : "requested page 11");
+
+  const zero = stubPool(pool, 7354);
+  const r0 = await searchGitHub("portfolio", { page: 0 });
+  globalThis.fetch = realFetch;
+  check("page 0 clamps up to page 1",
+    r0.page === 1 && zero.every((c) => c.url.includes("page=1")) ? "ok" : `page ${r0.page}`);
+}
+
+console.log("=== the 1,000 result cap is stated ===");
+
+{
+  // A pool that never runs out, so the cap is what decides the page count.
   const calls: Call[] = [];
   globalThis.fetch = (async (url: string) => {
     calls.push({ url });
     const page = Number(new URL(url).searchParams.get("page") ?? "1");
-    const items = Array.from({ length: 100 }, (_, i) =>
-      item(`gen${page}/repo${i}`, 1000 - i),
-    );
+    const items = Array.from({ length: 100 }, (_, i) => item(`gen${page}/repo${i}`, 1000 - i));
     return new Response(JSON.stringify({ total_count: 999999, items }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
 
-  const r = await searchGitHub("portfolio", { pages: 99 });
+  const r = await searchGitHub("portfolio", {});
   globalThis.fetch = realFetch;
-  check("pages argument is clamped to 10",
-    calls.length === MAX_PAGES_FOR_TEST, `made ${calls.length} calls, max ${MAX_PAGES_FOR_TEST}`);
-  check("never requests page 11", !calls.some((c) => c.url.includes("page=11")) ? "ok" : "requested page 11");
+  eq("a huge result set still reports ten pages", String(r.pages), String(MAX_PAGES_FOR_TEST));
   check("truncated flag set at the 1,000 cap", r.truncated ? "ok" : "got false");
+}
+
+console.log("=== failures are not silent ===");
+
+{
+  // A rate limit on a single-page search has nothing to fall back on, so it is
+  // an error the page must show rather than an empty list.
+  const reset = Math.floor(Date.now() / 1000) + 42;
+  globalThis.fetch = (async () =>
+    new Response("rate limited", {
+      status: 403,
+      headers: { "x-ratelimit-reset": String(reset) },
+    })) as typeof fetch;
+
+  const r = await searchGitHub("portfolio", {});
+  globalThis.fetch = realFetch;
+  check("rate limit reports a partial", r.partial ? "ok" : "no partial set");
+  check("rate limit is an error, not an empty result set",
+    r.error ? "ok" : "no error set");
+  check("and it quotes the reset time", (r.partial ?? "").includes("42s"), r.partial);
+}
+
+{
+  // An unreachable GitHub must surface too, not render as "no matches".
+  globalThis.fetch = (async () => {
+    throw new Error("network down");
+  }) as typeof fetch;
+
+  const r = await searchGitHub("portfolio", {});
+  globalThis.fetch = realFetch;
+  check("an unreachable upstream reports an error", r.error ? "ok" : "no error set");
+  check("and returns no rows rather than throwing", r.results.length === 0 ? "ok" : `got ${r.results.length}`);
 }
 
 console.log("=== edge worker routing ===");

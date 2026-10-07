@@ -22,12 +22,6 @@
 
 const $ = (id) => document.getElementById(id);
 
-/** Rows rendered per page; the sentinel appends more as the reader scrolls. */
-const PAGE = 40;
-
-/** Pages of 100 repos fetched per request. One is ~35 Pages sites. */
-const PAGE_STEP = 1;
-
 /**
  * Debounce before asking GitHub.
  *
@@ -63,9 +57,11 @@ const TAGS_COLLAPSED = 11;
 const state = {
   rows: [],
   total: 0,
-  pages: 0,
+  /** Which page of results is on screen, 1-based. */
+  page: 1,
+  /** How many pages exist for the current query. */
+  pageCount: 0,
   truncated: false,
-  hasMore: false,
   partial: null,
   error: null,
   loading: false,
@@ -80,7 +76,6 @@ const state = {
   /** Liveness verdicts, keyed by site URL. */
   live: new Map(),
   verifyToken: 0,
-  rendered: 0,
   /** True while the tag picker is offered, so results do not overwrite it. */
   hasQuery: false,
 };
@@ -113,8 +108,9 @@ function safeUrl(u) {
 /**
  * Run a query against GitHub through the edge worker.
  *
- * Pages accumulate: `searchGitHub` walks page 1..N and returns the union, so
- * "show more" extends the set rather than replacing it.
+ * One API page per call. Paging fetches only the page being shown, so turning to
+ * page 4 costs the same single request as arriving on page 1 — see
+ * `searchGitHub` for why it used to cost three.
  *
  * A selected tag becomes `topic:<tag>` rather than free text. GitHub's topic
  * qualifier is exact, so this searches for repos that carry that tag rather
@@ -124,7 +120,6 @@ function safeUrl(u) {
 async function runSearch(opts = {}) {
   const raw = $("q").value.trim();
   const q = state.tag ? `topic:${state.tag}` : raw;
-  const fresh = opts.fresh || state.lastQuery !== q;
 
   if (!q) {
     resetSearch();
@@ -144,8 +139,11 @@ async function runSearch(opts = {}) {
     return;
   }
 
-  if (!fresh && !opts.more && state.rows.length) return;
-  const pages = fresh ? PAGE_STEP : state.pages + PAGE_STEP;
+  // A different query starts at page 1. Keeping the old page number would show
+  // page 7 of a query the reader had not seen page 1 of.
+  const fresh = opts.fresh || state.lastQuery !== q;
+  const page = fresh ? 1 : opts.page;
+  if (!fresh && !page) return;
 
   state.inflight?.abort();
   const ctrl = new AbortController();
@@ -172,7 +170,7 @@ async function runSearch(opts = {}) {
    */
   let res;
   try {
-    res = await searchGitHub(q, { signal: ctrl.signal, pages });
+    res = await searchGitHub(q, { signal: ctrl.signal, page });
   } catch (err) {
     if (err && err.name === "AbortError") {
       state.inflight = null;
@@ -190,16 +188,16 @@ async function runSearch(opts = {}) {
   state.inflight = null;
   state.loading = false;
   state.lastQuery = q;
-  state.pages = res.pagesFetched;
+  state.page = res.page;
+  state.pageCount = res.pages;
   state.rows = res.results;
   state.total = res.total;
   state.truncated = res.truncated;
-  state.hasMore = res.hasMore;
   state.partial = res.partial ?? null;
   state.error = res.error ?? null;
 
-  // Verdicts are kept across queries on purpose: a URL that resolved five
-  // minutes ago will very likely resolve now, and re-checking it would spend
+  // Verdicts are kept across pages and queries on purpose: a URL that resolved
+  // five minutes ago will very likely resolve now, and re-checking it would spend
   // another Worker request for no new information. Bounded so a long session
   // cannot grow it without limit.
   if (state.live.size > 200) state.live.clear();
@@ -218,13 +216,12 @@ function resetSearch() {
   state.lastQuery = "";
   state.rows = [];
   state.total = 0;
-  state.pages = 0;
+  state.page = 1;
+  state.pageCount = 0;
   state.truncated = false;
-  state.hasMore = false;
   state.partial = null;
   state.error = null;
   state.hasQuery = false;
-  state.rendered = 0;
 }
 
 // ---------------------------------------------------------------- tag picker
@@ -426,32 +423,35 @@ function rowHtml(r) {
 
 function renderPage() {
   const el = $("results");
-  const slice = state.rows.slice(state.rendered, state.rendered + PAGE);
-  const rows = slice.map(rowHtml).join("");
-  if (state.rendered === 0) {
-    // The summary and the "show more" control are rebuilt with the first page,
-    // then left alone as the sentinel appends more rows: they describe the
-    // result set, not the slice currently on screen.
-    el.innerHTML = rows + `<p class="note">${summaryHtml()}</p>` + moreHtml();
-  } else {
-    el.insertAdjacentHTML("beforeend", rows);
-  }
-  state.rendered += slice.length;
-  $("sentinel").hidden = state.rendered >= state.rows.length;
+  el.innerHTML = state.rows.map(rowHtml).join("") +
+    `<p class="note">${summaryHtml()}</p>` +
+    pagerHtml();
 }
 
-/** The line under the results: how many, from where, and what was checked. */
+/**
+ * The line under the results: where in the result set this is, and what was
+ * checked.
+ *
+ * It states the position in the set rather than a running total, because with
+ * pagination the old wording — "85 sites so far", then "3 of up to 10 pages
+ * loaded" — described accumulation that no longer happens and read as though
+ * more results were queued behind the button.
+ */
 function summaryHtml() {
   const n = state.rows.length;
-  const bits = [`${n.toLocaleString()} Pages site${n === 1 ? "" : "s"}, live from GitHub`];
+  const bits = [`${n.toLocaleString()} Pages site${n === 1 ? "" : "s"} on this page`];
+  if (state.pageCount > 1) {
+    const first = (state.page - 1) * 100 + 1;
+    const last = (state.page - 1) * 100 + n;
+    bits.push(`results ${first.toLocaleString()}–${last.toLocaleString()}`);
+  }
   if (state.tag) bits.push(`topic: ${state.tag}`);
   if (state.total > n) {
     bits.push(
-      `GitHub reports ${state.total.toLocaleString()} matching repos` +
-        (state.truncated ? ", and never returns more than 1,000 per query" : ""),
+      `${state.total.toLocaleString()} repos match` +
+        (state.truncated ? ", of which only the first 1,000 are reachable" : ""),
     );
   }
-  if (state.pages) bits.push(`${state.pages} of up to 10 pages loaded`);
   if (state.partial) bits.push(state.partial);
   const checked = [...state.live.values()].filter((v) => v !== "checking").length;
   bits.push(
@@ -462,16 +462,32 @@ function summaryHtml() {
   return esc(bits.join(" · "));
 }
 
-function moreHtml() {
-  if (state.hasMore || state.loading) {
-    return `<button type="button" id="more" class="tagbtn" ${state.loading ? "disabled" : ""}>` +
-      (state.loading ? "Loading…" : `Show more (${state.rows.length.toLocaleString()} so far)`) +
-      `</button>`;
+/**
+ * Numbered page control.
+ *
+ * GitHub reports a total that can be in the millions while refusing to serve
+ * past 1,000 results, so the honest control is the ten pages that actually exist
+ * — not a "load more" that walks into a wall at page 11 and cannot say why.
+ *
+ * Every page number is shown. Ten is few enough that a windowed control would be
+ * more machinery than it saves, and hiding pages behind ellipses is how a reader
+ * ends up believing page 40 exists.
+ */
+function pagerHtml() {
+  if (state.pageCount <= 1) {
+    return state.truncated && state.total > 1000
+      ? `<p class="note">GitHub returns at most 1,000 results per query, so this is all of them. Narrow the search to see different results.</p>`
+      : "";
   }
-  if (state.total > state.rows.length) {
-    return `<p class="note">Reached GitHub's per-query limit. Try a narrower search.</p>`;
+  const buttons = [];
+  for (let p = 1; p <= state.pageCount; p++) {
+    buttons.push(
+      `<button type="button" class="pagebtn${p === state.page ? " current" : ""}" data-page="${p}"${
+        p === state.page ? ' aria-current="page"' : ""
+      }>${p}</button>`,
+    );
   }
-  return "";
+  return `<nav class="pager" aria-label="Result pages">${buttons.join("")}</nav>`;
 }
 
 /**
@@ -484,16 +500,12 @@ function renderResults(statusText) {
   const el = $("results");
   if (statusText) {
     el.innerHTML = `<div class="empty">${esc(statusText)}</div>`;
-    $("sentinel").hidden = true;
     return;
   }
   if (state.error) {
     el.innerHTML = `<div class="empty">${esc(state.error)}</div>`;
-    $("sentinel").hidden = true;
     return;
   }
-
-  state.rendered = 0;
 
   // With no query there is nothing to show, and the tag picker below the hero is
   // the page's offer. Leaving an empty box there would just be a gap.
@@ -501,22 +513,11 @@ function renderResults(statusText) {
     el.innerHTML = state.hasQuery
       ? `<div class="empty">No Pages sites matched. Try a broader search.</div>`
       : "";
-    $("sentinel").hidden = true;
     return;
   }
   renderPage();
   paintLiveRows();
 }
-
-// Infinite page-in, only while more results remain.
-new IntersectionObserver(
-  (entries) => {
-    if (entries.some((e) => e.isIntersecting) && state.rendered < state.rows.length) {
-      renderPage();
-    }
-  },
-  { rootMargin: "600px" },
-).observe($("sentinel"));
 
 // ---------------------------------------------------------------- controls
 
@@ -534,11 +535,24 @@ $("q").addEventListener("input", () => {
   debounce = setTimeout(() => runSearch({ fresh: true }), DEBOUNCE_MS);
 });
 
-/** "Show more" is delegated, because the button is re-rendered on every update. */
+/**
+ * Paging, delegated because the pager is re-rendered on every update.
+ *
+ * Jumping straight to a page rather than only "next" matters here: a reader who
+ * landed on page 7 has no way to get back to page 1 without nine clicks, and the
+ * whole point of a numbered pager is that any page is one click away.
+ *
+ * The list is scrolled to the top first. Without that, changing page leaves the
+ * reader looking at result 240 of the previous page with no indication that
+ * anything happened.
+ */
 document.addEventListener("click", (e) => {
-  if (e.target instanceof HTMLElement && e.target.id === "more") {
-    runSearch({ more: true });
-  }
+  const btn = e.target.closest(".pagebtn");
+  if (!btn) return;
+  const page = Number(btn.dataset.page);
+  if (!page || page === state.page) return;
+  window.scrollTo({ top: 0, behavior: "auto" });
+  runSearch({ page });
 });
 
 // ---------------------------------------------------------------- boot

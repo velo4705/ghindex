@@ -233,90 +233,83 @@ async function fetchPage(input, page, opts, edge) {
 }
 
 /**
- * Search GitHub for Pages-enabled repositories.
+ * How many pages of results exist for a query.
  *
- * Pages are fetched sequentially rather than in parallel: the rate limit is a
- * fixed budget per minute, so firing page 4 alongside page 1 would not make it
- * finish sooner, it would just spend the budget faster and make the *next*
- * search fail sooner.
+ * GitHub reports a `total_count` that can be in the millions while refusing to
+ * serve past 1,000 results, so the honest number is the reachable one: ten pages
+ * of a hundred. Everything else is unreachable, and saying so is more useful than
+ * a page count that implies browsing further would find something new.
+ */
+export function pageCount(total) {
+  const t = Number(total) || 0;
+  if (t <= 0) return 0;
+  return Math.min(MAX_PAGES, Math.ceil(t / PER_PAGE));
+}
+
+/**
+ * Search GitHub for Pages-enabled repositories: exactly one page of results.
+ *
+ * Why one page, not "everything so far"
+ * -----------------------------------
+ * This used to walk pages 1..N and return the union, so the page could ask for
+ * "page 3" by requesting 3 pages and being handed 3 again. On a rate limit
+ * shared by every visitor that is the whole budget: reaching page 3 cost three
+ * requests, and clicking again cost three more, because pages 1 and 2 were
+ * refetched to rebuild a list the reader already had.
+ *
+ * Pagination asks for the page it is going to show and nothing else. Going to
+ * page 4 costs one request, the same as arriving on page 1, which is what makes
+ * the control honest about what it spends.
  *
  * @param {string} input free text from the user
- * @param {{token?: string, signal?: AbortSignal, pages?: number}} [opts]
- * @returns {Promise<{query:string, results:Array, total:number, truncated:boolean,
- *                    pagesFetched:number, hasMore:boolean, partial?:string, error?:string}>}
+ * @param {{token?: string, signal?: AbortSignal, page?: number}} [opts]
+ * @returns {Promise<{query:string, results:Array, total:number, page:number,
+ *                    pages:number, truncated:boolean, partial?:string, error?:string}>}
  */
 export async function searchGitHub(input, opts = {}) {
   const q = buildQuery(input);
-  const empty = {
-    query: input,
-    results: [],
-    total: 0,
-    truncated: false,
-    pagesFetched: 0,
-    hasMore: false,
-  };
+  const page = Math.max(1, Math.min(MAX_PAGES, opts.page ?? 1));
+  const empty = { query: input, results: [], total: 0, page, pages: 0, truncated: false };
   if (!q) return empty;
 
   const edge = opts._retried ? null : edgeEndpoint();
-  const wantPages = Math.max(1, Math.min(MAX_PAGES, opts.pages ?? 1));
-  const seen = new Set();
-  const results = [];
-  let total = 0;
-  let pagesFetched = 0;
-  let partial = null;
 
-  for (let page = 1; page <= wantPages; page++) {
-    let res;
-    try {
-      res = await fetchPage(input, page, opts, edge);
-    } catch (err) {
-      if (err && err.name === "AbortError") throw err;
-      partial = results.length
-        ? `Stopped early: could not reach GitHub (${String(err).slice(0, 60)}).`
-        : `Could not reach GitHub (${String(err).slice(0, 60)}).`;
-      break;
-    }
-
-    if (res.kind === "rate-limited") {
-      partial = results.length
-        ? `GitHub's public search limit resets in ${res.wait}s. Showing what loaded before the limit.`
-        : `GitHub's public search limit resets in ${res.wait}s. ` +
-          `Add a read-only token for a higher limit, or keep browsing the local index.`;
-      break;
-    }
-    if (res.kind === "error") {
-      partial = results.length ? `${res.message} Showing earlier pages.` : res.message;
-      break;
-    }
-
-    total = res.total;
-    pagesFetched++;
-    const before = results.length;
-    for (const item of res.items) {
-      const row = toResult(item);
-      if (!row || seen.has(row.full_name)) continue;
-      seen.add(row.full_name);
-      results.push(row);
-    }
-    // An empty page means the result set is exhausted; asking for more would
-    // burn rate limit for nothing.
-    if (res.items.length === 0 || results.length === before) break;
-    if (page < wantPages && total <= page * PER_PAGE) break;
+  let res;
+  try {
+    res = await fetchPage(input, page, opts, edge);
+  } catch (err) {
+    if (err && err.name === "AbortError") throw err;
+    const partial = `Could not reach GitHub (${String(err).slice(0, 60)}).`;
+    return { ...empty, partial, error: partial };
   }
 
+  if (res.kind === "rate-limited") {
+    const partial =
+      `GitHub's public search limit resets in ${res.wait}s. ` +
+      `Add a read-only token for a higher limit, or try again shortly.`;
+    return { ...empty, partial, error: partial };
+  }
+  if (res.kind === "error") {
+    return { ...empty, partial: res.message, error: res.message };
+  }
+
+  const results = [];
+  const seen = new Set();
+  for (const item of res.items) {
+    const row = toResult(item);
+    if (!row || seen.has(row.full_name)) continue;
+    seen.add(row.full_name);
+    results.push(row);
+  }
   results.sort(byPopularity);
 
   return {
     query: input,
     results,
-    total,
-    truncated: total >= RESULT_CAP,
-    pagesFetched,
-    hasMore: pagesFetched < MAX_PAGES && total > results.length,
-    partial: partial ?? undefined,
-    ...(results.length === 0 && partial && !partial.startsWith("Showing") && !partial.startsWith("Stopped")
-      ? { error: partial }
-      : {}),
+    total: res.total,
+    page,
+    pages: pageCount(res.total),
+    truncated: res.total >= RESULT_CAP,
   };
 }
 

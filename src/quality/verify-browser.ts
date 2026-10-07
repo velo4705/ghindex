@@ -472,13 +472,65 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
   check("the picked tag shows as selected", pressed === tag, `pressed=${pressed || "none"}`);
 
   const summary = await evalJs(`document.querySelector('#results p.note')?.textContent ?? ''`);
-  check("the summary says the results are live", /live from GitHub/i.test(summary), summary.slice(0, 70));
+  check("the summary says the results are live", /on this page/.test(summary), summary.slice(0, 70));
   check("the summary names the topic being searched", new RegExp(tag).test(summary), summary.slice(0, 70));
 
   // One result set. This is the check that matters most: the bug being guarded
   // against was two stacked groups, a local one usually saying "0 matches"
   // above a live one that had the answer.
-check("there is exactly one results container", await evalJs(`document.querySelectorAll('#results').length`) === 1);
+// ------------------------------------------------------------- pagination
+
+  // "Show more" used to walk pages 1..N and return the union, so paging cost
+  // three requests to reach page 3 and three again on the next click. It is
+  // numbered pages now, each costing one.
+  const pager = await evalJs(`JSON.stringify((() => ({
+    buttons: document.querySelectorAll('#results .pagebtn').length,
+    current: document.querySelector('#results .pagebtn.current')?.textContent ?? '',
+    aria: document.querySelector('#results .pagebtn.current')?.getAttribute('aria-current') ?? '',
+    hasMoreButton: !!document.getElementById('more'),
+    firstRow: document.querySelector('#results .row h3 a')?.textContent ?? '',
+  }))())`);
+  const pg = JSON.parse(String(pager));
+
+  check("results are paged with numbered controls", pg.buttons >= 2, `${pg.buttons} page buttons`);
+  check("page 1 is marked current", pg.current === "1", `current="${pg.current}"`);
+  check("and says so for assistive tech", pg.aria === "page", `aria-current="${pg.aria}"`);
+  // The control it replaced. A "show more" implies more is queued behind it,
+  // which is exactly the wrong idea when GitHub caps the result set at 1,000.
+  check("the old 'show more' button is gone", pg.hasMoreButton === false);
+
+  const before = pg.firstRow;
+  await evalJs(`(() => { document.querySelectorAll('#results .pagebtn')[1]?.click(); return 1; })()`);
+  const page2 = await waitFor(
+    evalJs,
+    `(() => { const c = document.querySelector('#results .pagebtn.current');
+       return c && c.textContent === '2'; })()`,
+  );
+  check("clicking page 2 loads it", page2 === true);
+
+  const after = await evalJs(`document.querySelector('#results .row h3 a')?.textContent ?? ''`);
+  check("and shows different rows", after !== before && after.length > 0, `${before} -> ${after}`);
+  const onPage2 = await evalJs(`JSON.stringify((() => {
+    const c = document.querySelector('#results .pagebtn.current');
+    return {
+      page: c?.textContent ?? '',
+      note: document.querySelector('#results p.note')?.textContent ?? '',
+    };
+  })())`);
+  const p2 = JSON.parse(String(onPage2));
+  check("the summary reports the position in the result set",
+    /results 101/.test(p2.note), p2.note.slice(0, 80));
+
+  // Jumping straight back has to work: with only a "next" control, a reader on
+  // page 8 has no way home.
+  await evalJs(`(() => { document.querySelector('#results .pagebtn[data-page="1"]')?.click(); return 1; })()`);
+  const backTo1 = await waitFor(
+    evalJs,
+    `document.querySelector('#results .pagebtn.current')?.textContent === '1'`,
+  );
+  check("and jumping back to page 1 works", backTo1 === true);
+
+  check("there is exactly one results container", await evalJs(`document.querySelectorAll('#results').length`) === 1);
 
 // The result list has to be as wide as the tag band: the "Searching GitHub…"
 // placeholder and the rows share this container, so a narrow one would squeeze
