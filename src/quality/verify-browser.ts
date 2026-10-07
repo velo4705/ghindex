@@ -255,24 +255,57 @@ async function runChecks(browser: string) {
   check("the search box is centred under the hero", a.searchOffset <= 2, `${a.searchOffset}px off centre`);
   check("the hero is centred on the page", a.heroOffset <= 2, `${a.heroOffset}px off centre`);
 
+  // "Dead centre" means the middle of the screen, not the middle of a column, and
+  // not the top. The box sat 24px high at every desktop size until the hero's
+  // top padding was set to cancel the asymmetry between the title above and the
+  // one help line below, so this is pinned rather than eyeballed.
+  const vcent = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+    const b = document.querySelector('.searchbox').getBoundingClientRect();
+    const t = document.getElementById('taglist').getBoundingClientRect();
+    const h = document.querySelector('h1').getBoundingClientRect();
+    return {
+      viewportH: window.innerHeight,
+      offset: Math.round((b.top + b.height / 2) - window.innerHeight / 2),
+      titleAboveCentre: h.bottom < window.innerHeight / 2,
+      tagsBottom: Math.round(t.bottom),
+      tagsVisible: t.bottom <= window.innerHeight,
+    };
+  })())`)));
+  check(
+    "the search box sits on the vertical centre of the screen",
+    Math.abs(vcent.offset) <= 4,
+    `${vcent.offset}px off the middle`,
+  );
+  check("the title is above it, not below", vcent.titleAboveCentre === true);
+  // Reserving the tag band's height is what keeps the box centred without hiding
+  // the topics a screen down. A plain 100svh hero centres the box and buries them.
+  check(
+    "and the topic row still fits on the first screen",
+    vcent.tagsVisible === true,
+    `tags end at ${vcent.tagsBottom}px of ${vcent.viewportH}px`,
+  );
+
   // Widths. The box is centred but narrow, the tag band and the result list are
   // near full-bleed. All three are pinned because "make it wide" and "leave free
   // pixels at the end" are opposite requirements that meet in one place.
   const widths = await evalJs(`JSON.stringify((() => {
-    const w = (sel) => {
+    // clientWidth, not innerWidth: innerWidth includes the scrollbar gutter, so
+    // centring against it reports a half-scrollbar offset once results make the
+    // page scrollable.
+    const left = (sel) => {
       const el = document.querySelector(sel);
       if (!el) return null;
       const r = el.getBoundingClientRect();
       return JSON.stringify({
         w: Math.round(r.width),
         left: Math.round(r.left),
-        right: Math.round(window.innerWidth - r.right),
+        right: Math.round(document.documentElement.clientWidth - r.right),
       });
     };
     return {
-      box: w('.searchbox'),
-      tags: w('.taglist'),
-      viewport: window.innerWidth,
+      box: left('.searchbox'),
+      tags: left('.taglist'),
+      viewport: document.documentElement.clientWidth,
     };
   })())`);
   const wd = JSON.parse(String(widths));
@@ -436,6 +469,12 @@ check(
   "the results container is near full width",
   wide.resultsW > wide.content * 0.75,
   `${wide.resultsW}px of ${wide.content}px`,
+);
+// The hero gives its height back once there are results, so the answers are not
+// a full screen below the fold.
+check(
+  "the hero collapses once there are results",
+  (await evalJs(`Math.round(document.querySelector('.hero').getBoundingClientRect().height)`)) < wide.viewport,
 );
 check(
   "the results and the tag band are the same width",

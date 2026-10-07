@@ -130,13 +130,66 @@
   main {
     max-width: 1200px;
     margin: 0 auto;
-    padding: clamp(2.5rem, 11vh, 5.5rem) clamp(1.25rem, 4vw, 3rem) 4rem;
+    padding: 0 clamp(1.25rem, 4vw, 3rem) 4rem;
   }
 
+  /*
+     The hero fills almost the whole viewport and centres its contents, so the
+     search box sits at the middle of the screen rather than near the top with a
+     screen of empty space beneath it.
+
+     Centring is on the group — title, subtitle, box, help — not on the box alone,
+     so the box lands a few pixels off true centre: it is the third of four stacked
+     elements, and the help line below roughly balances the title above.
+     Centring the box alone would shove the title to the top of the group and make
+     the block look bottom-heavy.
+
+     `svh`, not `vh`: on mobile `vh` is the height with browser chrome hidden, so
+     a 100vh box scrolls its own content under the URL bar as the chrome collapses.
+
+     The subtracted 7rem is the tag band and its gap. A full-viewport hero is
+     correct for centring the box, but it puts the tags one scroll away, and the
+     tags are half the reason the page has content. Reserving their height keeps
+     the box within ~10px of centre *and* leaves the topic row on the first
+     screen, which a plain 100svh could not do.
+  */
   .hero {
     text-align: center;
     max-width: 820px;
     margin: 0 auto;
+    min-height: calc(100svh - 7rem);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    /*
+       The box does not land on the true centre when the group does, because the
+       group is not symmetric about the box: the title and subtitle above it total
+       more height than the one help line below it. Left alone the box sat 24px
+       high at every desktop size. Padding the top shifts the centred group down
+       by half its own height, which cancels that exactly.
+
+       The 3rem is not a guess: it is twice the measured offset, because flex
+       centres within the content box, and only the padding above moves the
+       result. verify-browser.ts asserts the box's centre against the viewport's
+       so this cannot drift again.
+    */
+    padding-top: 3rem;
+  }
+
+  /*
+     Once there are results, the hero gives its height back.
+
+     Without this the hero keeps a full viewport even after a search, so the
+     answers appear exactly one screen below the fold and a visitor who searched
+     has to scroll to find out whether anything matched. Shrinking it on the first
+     result keeps the results where the eye already is.
+
+     `:has()` rather than a class toggled from script, so the layout cannot drift
+     out of sync with the state that causes it.
+  */
+  main:has(#results > *) .hero {
+    min-height: 0;
+    padding: clamp(2rem, 7vh, 4rem) 0 clamp(1rem, 3vh, 1.75rem);
   }
 
   h1 {
