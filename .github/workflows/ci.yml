@@ -46,7 +46,7 @@ jobs:
       # Guards the live-only shape of the page: no index is fetched, and the
       # example queries it offers are still worth offering.
       - name: Front end has no local index
-        run: bun run src/publish/test-idle.ts
+        run: bun run test:front-end
 
       - name: CI compatibility self-test
         run: bun run src/quality/test-ci-compat.ts

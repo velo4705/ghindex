@@ -119,7 +119,7 @@ console.log("=== 8. deploy workflow uploads the site dir and needs the Pages env
   check("uploads src/site", /path:\s*src\/site/.test(yml));
   check("uses the github-pages environment", /environment:[\s\S]{0,80}github-pages/.test(yml));
   check("requests pages:write and id-token:write", /pages:\s*write/.test(yml) && /id-token:\s*write/.test(yml));
-  check("verifies before deploying", /test-idle\.ts/.test(yml));
+  check("verifies before deploying", /test:front-end/.test(yml));
   check("does not cancel an in-flight deploy", /cancel-in-progress:\s*false/.test(yml));
   // These gates all described a generated index and died with it.
   check("does not call the deleted page test", !/test-pages\.ts/.test(yml));
@@ -130,7 +130,14 @@ console.log("=== 8. deploy workflow uploads the site dir and needs the Pages env
 console.log("=== 9. no workflow runs the deleted nightly index refresh ===");
 for (const wf of WORKFLOWS) {
   const raw = await Bun.file(wf).text();
-  for (const gone of ["harvest.ts", "index/probe.ts", "bun run build", "bun run pages", "quality/perf-budget"]) {
+  for (const gone of [
+    "harvest.ts",
+    "index/probe.ts",
+    "bun run build",
+    "bun run pages",
+    "quality/perf-budget",
+    "test-idle",
+  ]) {
     check(`${wf} does not run ${gone}`, !raw.includes(gone));
   }
 }

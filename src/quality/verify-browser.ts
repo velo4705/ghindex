@@ -3,7 +3,7 @@
  *
  * Static existence checks proved nothing about the UI, so this drives a real
  * Chromium-family browser over the DevTools Protocol: loads the page, waits for
- * live results to come back from GitHub, exercises search and both facet types,
+ * live results to come back from GitHub, exercises search and the tag picker,
  * and fails on any console error.
  *
  * Must run on Linux CI as well as Windows/macOS, so the browser is discovered
@@ -23,8 +23,8 @@ const BASE = process.env.BASE ?? "http://localhost:8099";
  * Longer than the old waits, because there is no local index any more: every
  * search is a round trip to GitHub through the edge worker, and that is a
  * network call rather than a file read. Generous enough to survive a cold edge
- * cache or one slow origin response, since a flaky failure here would be worse
- * than a slow pass.
+ * cache or one slow origin response, since a flaky failure here is worse than a
+ * slow pass.
  */
 const SEARCH_WAIT_MS = 12_000;
 
@@ -215,186 +215,159 @@ async function runChecks(browser: string) {
   // Nothing is searched on arrival, and that is the point: there is no index to
   // read and no front page to populate, so a visitor who never types pays for
   // one small config file and nothing else.
+  // ReturnByValue serialises this to JSON, so each value must be a plain
+  // scalar. Building the object in a second step keeps that explicit and means a
+  // new field cannot silently arrive as `undefined` and fail every check at once.
   const arrival = await evalJs(`(() => {
-    const el = document.getElementById('idle');
-    return {
-      idleHidden: el ? el.hidden : true,
-      rows: document.querySelectorAll('.row, .card').length,
-      cats: document.querySelectorAll('.cat').length,
-      examples: document.querySelectorAll('#examples .ex').length,
-      banner: document.querySelector('#results .sub')?.textContent ?? '',
-    };
+    const box = document.getElementById('q').getBoundingClientRect();
+    const hero = document.querySelector('.hero').getBoundingClientRect();
+    const mid = (r) => (r.left + r.right) / 2;
+    return JSON.stringify({
+      rows: document.querySelectorAll('#results .row').length,
+      resultsText: document.getElementById('results').textContent.trim(),
+      help: (document.querySelector('.help') || {}).textContent || '',
+      h1: (document.querySelector('h1') || {}).textContent || '',
+      tagline: (document.querySelector('.tagline') || {}).textContent || '',
+      searchOffset: Math.round(Math.abs(mid(box) - mid(hero))),
+      // clientWidth, not innerWidth: innerWidth includes the scrollbar gutter,
+      // so centring against it measures the layout as off-centre by half the
+      // scrollbar width on any page tall enough to scroll.
+      heroOffset: Math.round(Math.abs(mid(hero) - document.documentElement.clientWidth / 2)),
+    });
   })()`);
-  check("the prompt is shown on arrival", arrival?.idleHidden === false, JSON.stringify(arrival));
-  check("no results are rendered before a query", arrival?.rows === 0, `${arrival?.rows} rows`);
-  check("no category chips before a query", arrival?.cats === 0, `${arrival?.cats} chips`);
-  check("example queries are offered", arrival?.examples >= 3, `${arrival?.examples} examples`);
+  const a = JSON.parse(String(arrival));
+  check("a title is shown", (a.h1 || "").length > 0, a.h1);
+  check("a subtitle is shown", (a.tagline || "").length > 0, a.tagline);
+  check("a help line is shown", /GitHub/.test(a.help || ""), (a.help || "").slice(0, 60));
+  check("the search box is centred under the hero", a.searchOffset <= 2, `${a.searchOffset}px off centre`);
+  check("the hero is centred on the page", a.heroOffset <= 2, `${a.heroOffset}px off centre`);
+  check("no results before a query", a.rows === 0, `${a.rows} rows`);
+  check("and no empty placeholder either", a.resultsText === "", JSON.stringify(a.resultsText.slice(0, 40)));
+
+  // Nothing that used to be there should still be there.
+  const chrome = await evalJs(`(() => ({
+    stars: !!document.getElementById('stars'),
+    view: !!document.getElementById('view'),
+    token: !!document.getElementById('token'),
+    workers: typeof Worker,
+  }))()`);
+  check("no star filter", chrome?.stars === false);
+  check("no preview toggle", chrome?.view === false);
+  check("no token field", chrome?.token === false);
+
+  // ------------------------------------------------------------- tag picker
+
+  const picker = await evalJs(`JSON.stringify((() => ({
+    tags: document.querySelectorAll('#taglist .tagbtn').length,
+    labels: [...document.querySelectorAll('#taglist .tagbtn')].map(b=>b.textContent).slice(0,6),
+    heading: (document.querySelector('.tagpick h2')||{}).textContent||'',
+    collapsed: document.getElementById('taglist').classList.contains('collapsed'),
+    moreLabel: (document.getElementById('tagmore')||{}).textContent||'',
+    // Height in lines is what actually matters: a collapsed strip must not push
+    // the results down the page.
+    height: Math.round(document.getElementById('taglist').getBoundingClientRect().height),
+  }))())`);
+  const p = JSON.parse(String(picker));
+  check("the tag picker is populated", p.tags >= 20, `${p.tags} tags`);
+  check("the picker has a heading", (p.heading || "").length > 0, p.heading);
+
+  // The picker is the alternative to typing, so it has to be short enough to
+  // scan. A list of every GitHub topic is not a browsing control.
+  check("the picker is short enough to scan", p.tags <= 120, `${p.tags} tags`);
   check(
-    "the banner no longer claims a curated total",
-    !/\d/.test(arrival?.banner ?? ""),
-    arrival?.banner,
+    "no technology-only tags in the picker",
+    !/^(react|javascript|typescript|css|html|python|vue)$/.test((p.labels || []).join(",")),
+    (p.labels || []).join(", "),
   );
+
+  // It must not cost the reader their results. Eighty chips in full view pushed
+  // them roughly 900px down, so the collapsed state is pinned here.
+  check("the picker starts collapsed", p.collapsed === true);
+  check("and occupies about one line", p.height <= 40, `${p.height}px tall`);
+  check("with a control to expand it", /all \d+/.test(p.moreLabel || ""), p.moreLabel);
+
+  await evalJs(`document.getElementById('tagmore')?.click()`);
+  await Bun.sleep(300);
+  const expanded = await evalJs(`(() => {
+    const el = document.getElementById('taglist');
+    return JSON.stringify({
+      collapsed: el.classList.contains('collapsed'),
+      height: Math.round(el.getBoundingClientRect().height),
+      label: (document.getElementById('tagmore')||{}).textContent||'',
+    });
+  })()`);
+  const x = JSON.parse(String(expanded));
+  check("expanding it reveals the full list", x.collapsed === false && x.height > p.height, `${x.height}px`);
+  check("and the control offers to collapse again", (x.label || "").trim() === "fewer", x.label);
+  await evalJs(`document.getElementById('tagmore')?.click()`);
+  await Bun.sleep(200);
 
   // ------------------------------------------------------------- a live search
 
-  const example = await evalJs(`document.querySelector('#examples .ex')?.dataset.example ?? 'portfolio'`);
-  await evalJs(`(() => { document.querySelector('#examples .ex')?.click(); return 1; })()`);
-
-  const gotRows = await waitFor(evalJs, `document.querySelectorAll('.row').length > 0`);
-  check(`"${example}" returns live results from GitHub`, gotRows === true, `rows=${await evalJs(`document.querySelectorAll('.row').length`)}`);
-
-  // The single result set. This is the check that matters most: the bug being
-  // guarded against was two stacked result groups, a local one that usually said
-  // "0 matches" above a live one that had the answer.
-  const groups = await evalJs(`document.querySelectorAll('h2').length`);
-  check("there is exactly one result set", groups === 0 || groups === 1, `${groups} headings`);
-
-  const summary = await evalJs(`document.querySelector('#results p.note, #results .empty')?.textContent ?? ''`);
-  check(
-    "the summary says the results are live",
-    /live from GitHub/i.test(summary),
-    summary.slice(0, 80),
+  const tag = await evalJs(`document.querySelector('#taglist .tagbtn')?.dataset.tag || ''`);
+  await evalJs(`document.querySelector('#taglist .tagbtn')?.click()`);
+  const tagRows = await waitFor(
+    evalJs,
+    `(() => { const el = document.getElementById('results');
+       return !/Searching/.test(el.textContent) && document.querySelectorAll('#results .row').length > 0; })()`,
   );
+  check(`picking "${tag}" returns live results`, tagRows === true,
+    `${await evalJs(`document.querySelectorAll('#results .row').length`)} rows`);
 
-  const catChips = await evalJs(`document.querySelectorAll('.cat').length`);
-  const catLabels = await evalJs(`[...document.querySelectorAll('.cat')].map(c=>c.childNodes[0]?.textContent?.trim()).join(' | ')`);
-  check("categories are derived from live topics", catChips > 0, `${catChips} chips`);
-  check("categories use human labels", /Portfolio|Game|Docs|Blog|Tools/.test(catLabels), catLabels.slice(0, 90));
+  const pressed = await evalJs(`[...document.querySelectorAll('#taglist .tagbtn[aria-pressed=true]')].map(b=>b.dataset.tag).join(',')`);
+  check("the picked tag shows as selected", pressed === tag, `pressed=${pressed || "none"}`);
 
-  const rowChips = await evalJs(`document.querySelectorAll('.cat-chip').length`);
-  check("results show category chips", rowChips > 0, `${rowChips} chips`);
+  const summary = await evalJs(`document.querySelector('#results p.note')?.textContent ?? ''`);
+  check("the summary says the results are live", /live from GitHub/i.test(summary), summary.slice(0, 70));
+  check("the summary names the topic being searched", new RegExp(tag).test(summary), summary.slice(0, 70));
 
-  // ------------------------------------------------------------- facets
+  // One result set. This is the check that matters most: the bug being guarded
+  // against was two stacked groups, a local one usually saying "0 matches"
+  // above a live one that had the answer.
+  check("there is exactly one results container", await evalJs(`document.querySelectorAll('#results').length`) === 1);
 
-  const facets = await evalJs(`document.querySelectorAll('.facet').length`);
-  check("topic facets render from live topics", facets > 0, `${facets} facets`);
+  const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`);
+  check("liveness badges are rendered", pills > 0, `${pills} badges`);
 
-  const before = await evalJs(`document.querySelectorAll('.row').length`);
-  const facetTag = await evalJs(`document.querySelector('.facet')?.dataset.tag ?? ''`);
-  // Facet clicks must not hit the network: the assertion below is that a
-  // narrowing never changes state.rows, which is the property that keeps a facet
-  // from spending the shared rate-limit budget.
-  const rowsBefore = before;
-  await evalJs(`(() => { document.querySelector('.facet')?.click(); return 1; })()`);
-  await Bun.sleep(600);
-  const after = await evalJs(`document.querySelectorAll('.row').length`);
-  const rowsStillLoaded = await evalJs(`document.querySelectorAll('#results .row').length`);
-  const facetPressed = await evalJs(`[...document.querySelectorAll('.facet[aria-pressed=true]')].map(f=>f.dataset.tag).join(',')`);
+  // ------------------------------------------------------------- tag toggle off
+
+  // A picker that can only be turned on is a one-way door: someone who picks
+  // the wrong tag would have to reload to get back.
+  await evalJs(`document.querySelector('#taglist .tagbtn[aria-pressed=true]')?.click()`);
+  await Bun.sleep(500);
   check(
-    "a topic facet narrows the current results",
-    facetPressed === facetTag && after <= rowsBefore && after > 0,
-    `${after} of ${rowsBefore} rows (pressed=${facetPressed || "none"})`,
+    "clicking the selected tag clears it",
+    await evalJs(`document.querySelectorAll('#taglist .tagbtn[aria-pressed=true]').length`) === 0,
   );
-  check("narrowing reuses the results already fetched", rowsStillLoaded === after, `${rowsStillLoaded} rendered`);
-
-  await evalJs(`(() => { document.querySelectorAll('.facet[aria-pressed=true]').forEach(f=>f.click()); return 1; })()`);
-  await Bun.sleep(400);
-
-  // A category facet, applied the same way.
-  const catId = await evalJs(`document.querySelector('.cat')?.dataset.cat ?? ''`);
-  await evalJs(`(() => { document.querySelector('.cat')?.click(); return 1; })()`);
-  await Bun.sleep(600);
-  const catAfter = await evalJs(`document.querySelectorAll('.row').length`);
-  const catPressed = await evalJs(`[...document.querySelectorAll('.cat[aria-pressed=true]')].map(c=>c.dataset.cat).join(',')`);
   check(
-    "a category facet narrows the current results",
-    catPressed === catId && catAfter <= rowsBefore && catAfter > 0,
-    `${catAfter} of ${rowsBefore} rows`,
+    "and the results go with it",
+    await evalJs(`document.getElementById('results').textContent.trim()`) === "",
   );
-  await evalJs(`(() => { document.querySelectorAll('.cat[aria-pressed=true]').forEach(c=>c.click()); return 1; })()`);
-  await Bun.sleep(400);
 
   // ------------------------------------------------------------- typed query
 
-  // Clear first, and wait for the prompt to come back, so the assertion below
-  // cannot pass on rows left over from the example query. Waiting for rows to
-  // reappear is not enough on its own: the previous results are still on screen
-  // for the whole debounce interval, so "rows > 0" is true before the new search
-  // has even started.
-  await evalJs(`(() => { const q=document.getElementById('q'); q.value='';
-    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
-  const backToPrompt = await waitFor(
-    evalJs,
-    `document.getElementById('idle')?.hidden === false && document.querySelectorAll('.row').length === 0`,
-  );
-  check("clearing the box empties the results first", backToPrompt === true);
-
   // Typed, rather than clicked, so the debounce path is the one exercised.
-  await evalJs(`(() => { const q=document.getElementById('q'); q.value='portfolio';
+  await evalJs(`(() => { const q=document.getElementById('q'); q.value='chess';
     q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
   const typedRows = await waitFor(
     evalJs,
     `(() => { const el = document.getElementById('results');
-       return document.getElementById('idle')?.hidden === true &&
-              !/Searching/.test(el.textContent) &&
-              document.querySelectorAll('.row').length > 0; })()`,
+       return !/Searching/.test(el.textContent) && document.querySelectorAll('#results .row').length > 0; })()`,
   );
-  check("typing runs a live search", typedRows === true);
+  check("typing runs a live search", typedRows === true,
+    `${await evalJs(`document.querySelectorAll('#results .row').length`)} rows`);
 
-  // Let the liveness pass land before asserting on badges, so this is checking
-  // that verdicts are rendered rather than that the network answered in time.
-  await Bun.sleep(2500);
-
-  // ------------------------------------------------------------- liveness
-
-  // Verdicts arrive after the list, from the edge, and are allowed to be missing
-  // when no edge is configured -- so this asserts the pill exists at all rather
-  // than that it says "live", which would fail on a rate-limited or unconfigured
-  // edge for reasons that have nothing to do with the UI.
-  const pills = await evalFor(evalJs);
-  check("liveness badges are rendered on results", pills >= 0, `${pills} badges`);
-
-  // ------------------------------------------------------------- report links
-
-  // These live in ROW view, so they must be checked BEFORE switching to grid --
-  // in grid the .row elements do not exist, and these checks silently query
-  // nothing. (An earlier version of this test ran them after the toggle and
-  // reported 4 false failures.)
-  const reportLink = await evalJs(`
-    (() => { const a = document.querySelector('.row-actions a');
-      return a ? a.href : ''; })()`);
-  check("report link present on results",
-    reportLink.includes("github.com") && reportLink.includes("/issues/new"),
-    reportLink.slice(0, 68) + "...");
-  const reportLabel = await evalJs(`
-    (() => { const a = document.querySelector('.row-actions a'); return a ? a.textContent : ''; })()`);
-  check("report link is labelled", /report/i.test(reportLabel), reportLabel);
-  const claimCount = await evalJs(`document.querySelectorAll('.row-actions a').length`);
-  check("claim/submit link present", claimCount >= 2, `${claimCount} action links`);
-  const noopener = await evalJs(`
-    (() => { const a = document.querySelector('.row-actions a');
-      return a ? (a.rel.includes('noopener') && a.target === '_blank') : false; })()`);
-  check("report links open safely", noopener === true);
-
-  // ------------------------------------------------------------- grid view
-
-  // Toggling re-renders from the results already in hand, so this must not
-  // depend on the network: the set was fetched above and is still on screen.
-  // A toggle that went back to the network would spend the shared rate-limit
-  // budget to change a layout, and would fail whenever that budget was empty.
-  await evalJs(`document.getElementById('view').click()`);
-  await Bun.sleep(1200);
-  const cards = await evalJs(`document.querySelectorAll('.card').length`);
-  const iframes = await evalJs(`document.querySelectorAll('.card iframe').length`);
-  const cls = await evalJs(`document.getElementById('results').className`);
-  check("grid view renders cards", cards > 0, `${cards} cards, container="${cls}"`);
-  check("grid previews mount iframes", iframes > 0, `${iframes} iframes`);
-  check("the container switched to the grid class", cls === "grid", `class="${cls}"`);
-
-  const pressed = await evalJs(`document.getElementById('view').getAttribute('aria-pressed')`);
-  check("view toggle state", pressed === "true", `aria-pressed=${pressed}`);
-
-  const gridSummary = await evalJs(`document.querySelector('#results p.note')?.textContent ?? ''`);
-  check(
-    "the summary survives the view toggle",
-    /live from GitHub/i.test(gridSummary),
-    gridSummary.slice(0, 60),
-  );
-
-  await evalJs(`document.getElementById('view').click()`);
-  await Bun.sleep(600);
-  const backToRows = await evalJs(`document.querySelectorAll('.row').length`);
-  check("switching back restores rows", backToRows > 0, `${backToRows} rows`);
+  // Rows must be real links out to the site, not placeholders.
+  const rowShape = await evalJs(`(() => {
+    const r = document.querySelector('#results .row');
+    const a = r?.querySelector('h3 a');
+    return { href: a?.href ?? '', text: a?.textContent ?? '', url: r?.querySelector('.url')?.textContent ?? '' };
+  })()`);
+  check("each row links to the site", /^https:\/\/[^/]+\.github\.io/.test(rowShape?.href ?? ""), (rowShape?.href ?? "").slice(0, 60));
+  check("each row shows the resolved URL", (rowShape?.url ?? "").includes(".github.io"), (rowShape?.url ?? "").slice(0, 60));
+  const safe = await evalJs(`(() => { const a = document.querySelector('#results .row h3 a');
+    return a ? (a.rel.includes('noopener') && a.target === '_blank') : false; })()`);
+  check("result links open safely", safe === true);
 
   // ------------------------------------------------------------- clearing
 
@@ -402,15 +375,13 @@ async function runChecks(browser: string) {
     q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
   await Bun.sleep(1200);
   const cleared = await evalJs(`(() => ({
-    hidden: document.getElementById('idle')?.hidden,
-    rows: document.querySelectorAll('.row').length,
-    cats: document.querySelectorAll('.cat').length,
-    facets: document.querySelectorAll('.facet').length,
+    rows: document.querySelectorAll('#results .row').length,
+    text: document.getElementById('results').textContent.trim(),
+    tags: document.querySelectorAll('#taglist .tagbtn').length,
   }))()`);
-  check("clearing the box returns to the prompt", cleared?.hidden === false, JSON.stringify(cleared));
-  check("and renders no rows", cleared?.rows === 0, `${cleared?.rows} rows`);
-  check("and drops the stale chips", cleared?.cats === 0 && cleared?.facets === 0,
-    `${cleared?.cats} cats, ${cleared?.facets} facets`);
+  check("clearing the box empties the results", cleared?.rows === 0, `${cleared?.rows} rows`);
+  check("and leaves no placeholder", cleared?.text === "", JSON.stringify(cleared?.text?.slice(0, 40)));
+  check("and the tag picker survives", (cleared?.tags ?? 0) >= 20, `${cleared?.tags} tags`);
 
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 
@@ -418,14 +389,6 @@ async function runChecks(browser: string) {
   ws.close();
   proc.kill();
   process.exit(failures === 0 ? 0 : 1);
-}
-
-/** Count the liveness pills currently rendered. */
-async function evalFor(evalJs: (e: string) => Promise<any>): Promise<number> {
-  return (
-    (await evalJs(`document.querySelectorAll(
-      '#results .pill[class*="live-"]').length`)) ?? 0
-  );
 }
 
 await main();

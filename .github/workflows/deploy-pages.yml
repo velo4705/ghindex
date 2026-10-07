@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           bun --version
-          bun run src/publish/test-idle.ts
+          bun run test:front-end
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

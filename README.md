@@ -43,14 +43,22 @@ in `worker/README.md`: the edge holds one token, so the whole site shares a
 not scale.** It is fine at current traffic and is a hard wall at real traffic.
 It is the honest price of not shipping a snapshot.
 
+## The page
+
+One centred search box, a line of help, a strip of topic chips, and results.
+
+There is no navigation and no configuration. The chips collapse to a single line
+with an "all 83" expander, because showing all of them pushed the results a full
+screen down and made the picker the page's main content, which it is not.
+
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
 | `src/site/` | The static site. This is what Pages deploys. |
-| `src/site/app.js` | Search, ranking, facets, and rendering. |
+| `src/site/app.js` | Search, the tag picker, and rendering. |
 | `src/site/github-search.js` | On-demand GitHub search and liveness checks. |
-| `src/site/taxonomy.js` | Topics → browse categories. Runs in the browser. |
+| `src/site/taxonomy.js` | The curated topic list and the classifier. Runs in the browser. |
 | `worker/` | The edge worker: token, caching, liveness verdicts. |
 | `spike/` | The original feasibility investigation, kept for provenance. |
 
@@ -70,13 +78,16 @@ needs a Chromium-family browser; set `CHROME_PATH` if it is somewhere unusual.
 
 ## What the front end can and cannot do
 
-**Categories and topics** are derived in the browser, from the topics GitHub just
-returned for the current results. Their counts therefore describe the page of
-results on screen, not every site that exists.
+**The topic chips search `topic:<tag>`**, not the free text. GitHub's topic
+qualifier is exact, so picking "portfolio" finds repos that carry that tag
+rather than every repo that mentions portfolios — which is what someone clicking
+a topic picker is asking for. Clicking the selected chip clears it.
 
-**Filtering** (category, topic, minimum stars) narrows what is already fetched.
-It never re-queries, because a facet can only remove rows from the set in hand
-and the rate-limit budget is shared.
+**The list is curated, not complete.** GitHub has 11,677 distinct topics on this
+corpus and 72% appear exactly once, so a literal "all tags" would be 11,677
+buttons, most leading to one unrelated repo. The chips are the subset that
+describes what a site *is* rather than what it was built with, and a test asserts
+no technology-only tag is among them.
 
 **`has_pages` is a repository setting**, and it can be weeks out of date with
 reality — a project that moved to a custom domain still reports Pages enabled
@@ -104,6 +115,10 @@ Point reports at your own fork with `REPORT_REPO=owner/repo`.
 - **Correctness** — the classifier and the live search module are unit tested.
 - **Edge behaviour** — proxy allowlist, token fallback, cache absorption, and
   liveness verdicts are tested with a stub cache and stubbed upstream.
-- **Behaviour** — the UI is driven in a real headless browser: one result set,
-  categories derived from live topics, facets narrowing without a network call,
-  and grid previews.
+- **Shape** — the page is asserted to be one search box with one results
+  container. The star filter, preview grid and token field are all checked to be
+  *absent*, because each one puts chrome between the visitor and the box.
+- **The topic picker** — populated, collapsible to one line, no technology-only
+  tags, and selecting one does not expand it.
+- **Behaviour** — the UI is driven in a real headless browser: live results, tag
+  selection and clearing, link badges, and clearing the box.

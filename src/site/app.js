@@ -1,10 +1,8 @@
 /**
  * ghindex read side.
  *
- * The page is a search box and results appear under it once you type. There is
- * no local index: every result is asked of GitHub through the edge worker at the
- * moment of the search, so what you see is what GitHub reports right now rather
- * than what a nightly harvest happened to catch.
+ * One centred search box and the results it returns. That is the whole page:
+ * there is no index, no navigation, and nothing to configure.
  *
  * Why there is no pre-built index
  * -------------------------------
@@ -20,97 +18,15 @@
  * worker/README.md: the edge holds one token, so the whole site shares a 30/min
  * budget and the cache absorbs roughly half of it. That ceiling is real and it
  * does not scale, which is the honest price of not shipping a snapshot.
- *
- * Ranking, facets and filtering all run here on whatever came back, because a
- * live result set is a page of results rather than a corpus: categories come
- * from classify() over the topics in hand, and their counts describe this result
- * set rather than every site that exists.
  */
 
 const $ = (id) => document.getElementById(id);
-const PAGE = 60; // rows rendered per page; sentinel appends more
 
-/**
- * Report/submit links, built as pre-filled GitHub issue URLs. The site is
- * static with no backend, so this is the only submission mechanism that needs
- * no server and no third-party form service. Configured via REPORT_REPO at
- * build time and read from data/reports.json at runtime.
- */
-let reportRepo = "velo4705/ghindex";
+/** Rows rendered per page; the sentinel appends more as the reader scrolls. */
+const PAGE = 40;
 
-function issueUrl(title, body, labels) {
-  const p = new URLSearchParams({ title, body });
-  if (labels) p.set("labels", labels);
-  return `https://github.com/${reportRepo}/issues/new?${p.toString()}`;
-}
-
-function reportBrokenUrl(siteUrl) {
-  return issueUrl(
-    `Dead or incorrect: ${siteUrl}`,
-    [
-      "## Report: problem with a listed site",
-      "",
-      `- **Site:** ${siteUrl}`,
-      "- **Observed:** (dead / 404 / wrong content / miscategorised)",
-      "",
-      "Links are checked as you load them. If the site is dead the check says so",
-      "inline; this report is for a link that resolves to the wrong thing, or a",
-      "site that is alive but wrongly described.",
-    ].join("\n"),
-    "report",
-  );
-}
-
-function submitSiteUrl(siteUrl, owner) {
-  return issueUrl(
-    `Submit: ${siteUrl}`,
-    [
-      "## Submit a site",
-      "",
-      `- **Site:** ${siteUrl}`,
-      `- **Owner:** @${owner}`,
-      "",
-      "### Details",
-      "",
-      "- What is it?",
-      "- Which category does it belong in?",
-      "- Is it your site, and do you want it listed?",
-    ].join("\n"),
-    "submission",
-  );
-}
-
-// ---------------------------------------------------------------- state
-
-const state = {
-  rows: [],
-  total: 0,
-  pages: 0,
-  truncated: false,
-  hasMore: false,
-  partial: null,
-  error: null,
-  loading: false,
-  inflight: null,
-  lastQuery: "",
-  q: "",
-  /** Liveness verdicts, keyed by site URL. */
-  live: new Map(),
-  verifyToken: 0,
-  cats: [],
-  catLabels: {},
-  activeCats: new Set(),
-  activeTags: new Set(),
-  minStars: 0,
-  // Row is the default. Previews are heavy (each card is a live iframe of a
-  // third-party page) and cannot be verified as loaded, so they are opt-in.
-  view: "row", // 'row' | 'grid'
-  rendered: 0,
-  shown: [],
-};
-
-/** Pages loaded per "show more" click. One page = 100 repos = ~35 Pages sites. */
-const WIDE_PAGE_STEP = 1;
+/** Pages of 100 repos fetched per request. One is ~35 Pages sites. */
+const PAGE_STEP = 1;
 
 /**
  * Debounce before asking GitHub.
@@ -133,8 +49,28 @@ const LIVE_CHECK_LIMIT = 24;
 /** URLs per batch. The worker allows twelve per call and six distinct hosts. */
 const LIVE_CHECK_CHUNK = 6;
 
-/** Reads a user-supplied token from the tab, if any. Never persisted. */
-const userToken = () => $("token")?.value.trim() || "";
+// ---------------------------------------------------------------- state
+
+const state = {
+  rows: [],
+  total: 0,
+  pages: 0,
+  truncated: false,
+  hasMore: false,
+  partial: null,
+  error: null,
+  loading: false,
+  inflight: null,
+  lastQuery: "",
+  /** The tag currently selected in the picker, or "". */
+  tag: "",
+  /** Liveness verdicts, keyed by site URL. */
+  live: new Map(),
+  verifyToken: 0,
+  rendered: 0,
+  /** True while the tag picker is offered, so results do not overwrite it. */
+  hasQuery: false,
+};
 
 // ---------------------------------------------------------------- helpers
 
@@ -159,44 +95,6 @@ function safeUrl(u) {
   }
 }
 
-/**
- * Whether a row passes the active facets.
- *
- * These filter what GitHub just returned, they do not re-query: a category is
- * derived client-side from topics, so narrowing by one can only ever remove
- * rows from the page in hand, never surface a site from outside it.
- */
-function passesFilters(r) {
-  const cats = r._cats ?? [];
-  if (state.activeCats.size) {
-    let ok = false;
-    for (const c of state.activeCats) {
-      if (cats.includes(c)) {
-        ok = true;
-        break;
-      }
-    }
-    if (!ok) return false;
-  }
-  if (state.activeTags.size) {
-    const have = new Set((r.topics ?? []).map((t) => t.toLowerCase()));
-    let ok = false;
-    for (const t of state.activeTags) {
-      if (have.has(t)) {
-        ok = true;
-        break;
-      }
-    }
-    if (!ok) return false;
-  }
-  if (state.minStars > 0 && (Number(r.stars) || 0) < state.minStars) return false;
-  return true;
-}
-
-function hasFilters() {
-  return state.activeCats.size > 0 || state.activeTags.size > 0 || state.minStars > 0;
-}
-
 // ---------------------------------------------------------------- search
 
 /**
@@ -204,24 +102,43 @@ function hasFilters() {
  *
  * Pages accumulate: `searchGitHub` walks page 1..N and returns the union, so
  * "show more" extends the set rather than replacing it.
+ *
+ * A selected tag becomes `topic:<tag>` rather than free text. GitHub's topic
+ * qualifier is exact, so this searches for repos that carry that tag rather
+ * than for repos that merely mention the word — which is what someone clicking
+ * "portfolio" in a topic picker is asking for.
  */
 async function runSearch(opts = {}) {
-  const q = $("q").value.trim();
+  const raw = $("q").value.trim();
+  const q = state.tag ? `topic:${state.tag}` : raw;
+  const fresh = opts.fresh || state.lastQuery !== q;
+
   if (!q) {
     resetSearch();
     renderResults();
-    showIdle(true);
     return;
   }
 
-  const fresh = opts.fresh || state.lastQuery !== q;
+  // Typing clears a selected tag: the visitor has moved on to a text query, and
+  // silently keeping the tag would ignore what they just typed.
+  if (raw && state.tag) {
+    state.tag = "";
+    renderTagPicker();
+  }
+  if (!raw && !state.tag) {
+    resetSearch();
+    renderResults();
+    return;
+  }
+
   if (!fresh && !opts.more && state.rows.length) return;
-  const pages = fresh ? WIDE_PAGE_STEP : state.pages + WIDE_PAGE_STEP;
+  const pages = fresh ? PAGE_STEP : state.pages + PAGE_STEP;
 
   state.inflight?.abort();
   const ctrl = new AbortController();
   state.inflight = ctrl;
   state.loading = true;
+  state.hasQuery = true;
   if (fresh) {
     state.error = null;
     state.partial = null;
@@ -242,11 +159,7 @@ async function runSearch(opts = {}) {
    */
   let res;
   try {
-    res = await searchGitHub(q, {
-      token: userToken(),
-      signal: ctrl.signal,
-      pages,
-    });
+    res = await searchGitHub(q, { signal: ctrl.signal, pages });
   } catch (err) {
     if (err && err.name === "AbortError") {
       state.inflight = null;
@@ -264,7 +177,6 @@ async function runSearch(opts = {}) {
   state.inflight = null;
   state.loading = false;
   state.lastQuery = q;
-  state.q = q;
   state.pages = res.pagesFetched;
   state.rows = res.results;
   state.total = res.total;
@@ -279,10 +191,7 @@ async function runSearch(opts = {}) {
   // cannot grow it without limit.
   if (state.live.size > 200) state.live.clear();
 
-  showIdle(false);
-  await classifyRows();
   renderResults();
-
   // Liveness is a follow-up, not part of the search: the list appears first and
   // gains badges as answers arrive, so a slow site never delays results.
   if (!state.error) verifyResults();
@@ -294,7 +203,6 @@ function resetSearch() {
   state.inflight = null;
   state.loading = false;
   state.lastQuery = "";
-  state.q = "";
   state.rows = [];
   state.total = 0;
   state.pages = 0;
@@ -302,43 +210,76 @@ function resetSearch() {
   state.hasMore = false;
   state.partial = null;
   state.error = null;
-  state.shown = [];
-  state.cats = [];
+  state.hasQuery = false;
+  state.rendered = 0;
 }
 
-// ---------------------------------------------------------------- classify
+// ---------------------------------------------------------------- tag picker
 
 /**
- * Derive categories from the topics in the current result set.
+ * The tag picker: a short list of topics worth browsing, drawn once at boot.
  *
- * The taxonomy used to run offline, at publish time, and the categories were
- * baked into the index. With no index it runs here, over the same topics GitHub
- * just returned, so browse-by-category survives on live results.
- *
- * The consequence to keep visible is in the counts: a chip says how many of the
- * results on screen are in that category, not how many such sites exist.
+ * It is not derived from results. The previous version computed category chips
+ * from whatever GitHub had just returned, which meant the control that was
+ * supposed to help you *find* things could only describe what you had already
+ * found, and its counts changed with every keystroke. A fixed list is a
+ * starting point you can act on before you have any results at all.
  */
-async function classifyRows() {
-  if (!state.rows.length) {
-    state.cats = [];
+async function renderTagPicker() {
+  const host = $("taglist");
+  if (!host) return;
+
+  // The module is imported once and the buttons written once. Later calls only
+  // restate which tag is selected, because rebuilding the list on every click
+  // would drop the button the visitor is interacting with out from under the
+  // pointer mid-click.
+  if (!host.childElementCount) {
+    let tags = [];
+    try {
+      ({ BROWSE_TAGS: tags } = await import("./taxonomy.js"));
+    } catch {
+      // The picker is a convenience; a failure to load it must not break search.
+      return;
+    }
+    host.innerHTML =
+      tags
+        .map((t) => `<button type="button" class="tagbtn" data-tag="${esc(t)}" aria-pressed="false">${esc(t)}</button>`)
+        .join("") +
+      `<button type="button" class="tagmore" id="tagmore" data-total="${tags.length}"
+         aria-expanded="false" aria-controls="taglist">all ${tags.length}</button>`;
+    // Collapsed by default. Eighty chips in full view pushed the results far
+    // enough down the page that a visitor who searched had to scroll past the
+    // whole picker to reach the answer.
+    host.classList.add("collapsed");
+  }
+
+  for (const btn of host.querySelectorAll(".tagbtn")) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.tag === state.tag));
+  }
+}
+
+/**
+ * Selecting a tag searches for that topic. Selecting the selected tag clears it,
+ * so the control is a toggle rather than a one-way door.
+ */
+$("taglist").addEventListener("click", (e) => {
+  // The expander shares the container, so it is handled first: it has no
+  // data-tag and would otherwise fall through and clear the selection.
+  if (e.target.closest("#tagmore")) {
+    const host = $("taglist");
+    const open = host.classList.toggle("collapsed") === false;
+    $("tagmore").setAttribute("aria-expanded", String(open));
+    $("tagmore").textContent = open ? "fewer" : `all ${$("tagmore").dataset.total ?? ""}`.trim();
     return;
   }
-  const { classify, CATEGORY_LABELS } = await import("./taxonomy.js");
-  state.catLabels = CATEGORY_LABELS;
 
-  const counts = new Map();
-  for (const r of state.rows) {
-    let cats;
-    try {
-      cats = classify(r.topics ?? []).categories;
-    } catch {
-      cats = [];
-    }
-    r._cats = cats;
-    for (const c of cats) counts.set(c, (counts.get(c) ?? 0) + 1);
-  }
-  state.cats = [...counts.entries()];
-}
+  const btn = e.target.closest(".tagbtn");
+  if (!btn) return;
+  const tag = btn.dataset.tag;
+  state.tag = state.tag === tag ? "" : tag;
+  renderTagPicker();
+  runSearch({ fresh: true });
+});
 
 // ---------------------------------------------------------------- liveness
 
@@ -438,10 +379,10 @@ function paintLiveRows() {
       ".pill.live-alive, .pill.live-gone, .pill.live-blocked, .pill.live-unknown, .pill.live-checking",
     );
     if (!pill) {
-      const host = row.querySelector("h3, .title");
+      const host = row.querySelector("h3");
       if (!host) continue;
       pill = document.createElement("span");
-      host.insertBefore(pill, host.firstChild);
+      host.appendChild(pill);
     }
     pill.className = `pill ${badge.cls}`;
     pill.textContent = badge.text;
@@ -451,87 +392,7 @@ function paintLiveRows() {
   }
 }
 
-// ---------------------------------------------------------------- facets
-
-/**
- * Categories are the browse control (they answer "what kind of thing is
- * this?"). Raw topics are secondary detail and only appear once a query has
- * told us which ones this result set actually uses.
- */
-function renderCatChips() {
-  const list = state.cats
-    .map(([id, n]) => ({ id, n, label: state.catLabels[id] ?? id }))
-    .sort((a, b) => b.n - a.n);
-
-  $("cats").innerHTML = list
-    .map(
-      (c) =>
-        `<button type="button" class="cat" data-cat="${esc(c.id)}" aria-pressed="${state.activeCats.has(c.id)}">` +
-        `${esc(c.label)}<span class="n">${c.n.toLocaleString()}</span></button>`,
-    )
-    .join("");
-}
-
-function renderFacets() {
-  const counts = new Map();
-  for (const r of state.shown) {
-    for (const t of r.topics ?? []) {
-      counts.set(t, (counts.get(t) ?? 0) + 1);
-    }
-  }
-  const shown = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 18);
-  // Hidden entirely when empty, so the header does not reserve a blank band.
-  $("filterbar").hidden = !state.cats.length && !shown.length;
-  $("facets").innerHTML = shown
-    .map(
-      ([t, n]) =>
-        `<button type="button" class="facet" data-tag="${esc(t.toLowerCase())}" aria-pressed="${state.activeTags.has(t.toLowerCase())}">` +
-        `${esc(t)}<span class="n">${n}</span></button>`,
-    )
-    .join("");
-}
-
-$("cats").addEventListener("click", (e) => {
-  const btn = e.target.closest(".cat");
-  if (!btn) return;
-  const id = btn.dataset.cat;
-  if (state.activeCats.has(id)) state.activeCats.delete(id);
-  else state.activeCats.add(id);
-  refilter();
-});
-
-$("facets").addEventListener("click", (e) => {
-  const btn = e.target.closest(".facet");
-  if (!btn) return;
-  const tag = btn.dataset.tag;
-  if (state.activeTags.has(tag)) state.activeTags.delete(tag);
-  else state.activeTags.add(tag);
-  refilter();
-});
-
-/**
- * Re-apply facets to the results already in hand.
- *
- * No network call: a facet can only remove rows from the current page, so
- * filtering client-side is both correct and the only thing that avoids spending
- * the shared rate-limit budget on a narrowing that GitHub has already answered.
- */
-function refilter() {
-  renderResults();
-}
-
 // ---------------------------------------------------------------- render
-
-function tagsHtml(r) {
-  const cats = (r._cats ?? [])
-    .map((c) => `<span class="cat-chip" title="${esc(state.catLabels[c] ?? c)}">${esc(state.catLabels[c] ?? c)}</span>`)
-    .join("");
-  const tags = (r.topics ?? [])
-    .slice(0, 4)
-    .map((g) => `<span class="tag">${esc(g)}</span>`)
-    .join("");
-  return `<span class="chips">${cats}${tags}</span>`;
-}
 
 function starBadge(r) {
   const stars = Number(r.stars) || 0;
@@ -544,46 +405,22 @@ function rowHtml(r) {
   const href = safeUrl(r.url);
   if (!href) return "";
   const title = r.full_name || `${r.owner}/${r.repo}`;
+  const tags = (r.topics ?? [])
+    .slice(0, 5)
+    .map((g) => `<span class="tag">${esc(g)}</span>`)
+    .join("");
   return `<article class="row" data-live="${esc(href)}">
     <h3>${livePillHtml(href)}<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>${starBadge(r)}</h3>
     <div class="url">${esc(href)}</div>
     ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
-    ${tagsHtml(r)}
-    <div class="row-actions">
-      <a href="${esc(reportBrokenUrl(href))}" target="_blank" rel="noopener noreferrer">Report problem</a>
-      <a href="${esc(submitSiteUrl(href, r.owner))}" target="_blank" rel="noopener noreferrer">Claim / submit</a>
-    </div>
-  </article>`;
-}
-
-function cardHtml(r) {
-  const href = safeUrl(r.url);
-  if (!href) return "";
-  // sandbox blocks scripts/top-navigation in previews; allow-same-origin keeps
-  // the about:blank heuristic working. A hostile page still cannot script
-  // against our origin because we send no cookies and use a null referrer.
-  const title = r.full_name || `${r.owner}/${r.repo}`;
-  return `<article class="card" data-live="${esc(href)}">
-    <div class="frame">
-      <iframe src="${esc(href)}" loading="lazy" sandbox="allow-same-origin"
-              referrerpolicy="no-referrer" title="Preview of ${esc(title)}"></iframe>
-      <div class="fallback">Preview unavailable —<br /><a href="${esc(href)}"
-        target="_blank" rel="noopener noreferrer">open site</a></div>
-    </div>
-    <div class="info">
-      <span class="card-head">${livePillHtml(href)}${starBadge(r)}</span>
-      <a class="title" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>
-      <div class="u">${esc(href)}</div>
-      <div class="tags">${tagsHtml(r)}</div>
-    </div>
+    ${tags ? `<div class="tags">${tags}</div>` : ""}
   </article>`;
 }
 
 function renderPage() {
   const el = $("results");
-  el.className = state.view === "grid" ? "grid" : "list";
-  const slice = state.shown.slice(state.rendered, state.rendered + PAGE);
-  const rows = state.view === "grid" ? slice.map(cardHtml).join("") : slice.map(rowHtml).join("");
+  const slice = state.rows.slice(state.rendered, state.rendered + PAGE);
+  const rows = slice.map(rowHtml).join("");
   if (state.rendered === 0) {
     // The summary and the "show more" control are rebuilt with the first page,
     // then left alone as the sentinel appends more rows: they describe the
@@ -593,34 +430,15 @@ function renderPage() {
     el.insertAdjacentHTML("beforeend", rows);
   }
   state.rendered += slice.length;
-
-  $("sentinel").hidden = state.rendered >= state.shown.length;
+  $("sentinel").hidden = state.rendered >= state.rows.length;
 }
 
-/**
- * Previews are left alone entirely.
- *
- * An earlier version tried to detect a blocked frame by reading the iframe's
- * own location after 3.5s: a cross-origin frame throws a SecurityError, and
- * that throw was treated as "loaded fine", while a frame sitting on
- * about:blank was treated as "blocked". Measured against the real corpus that
- * got it backwards for 46 of 60 cards: frames that had genuinely rendered were
- * hidden behind a "Preview unavailable" fallback, and the ones it hid were the
- * ones working. A cross-origin iframe simply cannot be introspected from here,
- * so the only honest options are to show it or not.
- *
- * A site that refuses framing renders as a blank box; the title and link below
- * the frame always remain, so the card is still usable.
- */
-
-/** The header line: how many results, from where, and what was checked. */
+/** The line under the results: how many, from where, and what was checked. */
 function summaryHtml() {
-  const n = state.shown.length;
+  const n = state.rows.length;
   const bits = [`${n.toLocaleString()} Pages site${n === 1 ? "" : "s"}, live from GitHub`];
-  if (hasFilters() && n !== state.rows.length) {
-    bits.push(`filtered from ${state.rows.length.toLocaleString()}`);
-  }
-  if (state.total > state.rows.length) {
+  if (state.tag) bits.push(`topic: ${state.tag}`);
+  if (state.total > n) {
     bits.push(
       `GitHub reports ${state.total.toLocaleString()} matching repos` +
         (state.truncated ? ", and never returns more than 1,000 per query" : ""),
@@ -639,12 +457,12 @@ function summaryHtml() {
 
 function moreHtml() {
   if (state.hasMore || state.loading) {
-    return `<button type="button" id="wide-more" class="btn" ${state.loading ? "disabled" : ""}>` +
+    return `<button type="button" id="more" class="tagbtn" ${state.loading ? "disabled" : ""}>` +
       (state.loading ? "Loading…" : `Show more (${state.rows.length.toLocaleString()} so far)`) +
       `</button>`;
   }
   if (state.total > state.rows.length) {
-    return `<p class="note">Reached GitHub's per-query limit. Narrow the search to see different results.</p>`;
+    return `<p class="note">Reached GitHub's per-query limit. Try a narrower search.</p>`;
   }
   return "";
 }
@@ -652,82 +470,41 @@ function moreHtml() {
 /**
  * Draw the result set, or the reason there isn't one.
  *
- * `statusText` covers the in-flight state so the box shows progress rather than
+ * `statusText` covers the in-flight state so the page shows progress rather than
  * the previous query's answer.
  */
 function renderResults(statusText) {
   const el = $("results");
-  // The class follows the current view even for the placeholder states, so an
-  // in-flight search or an error cannot silently switch a reader out of grid
-  // view and leave the toggle claiming otherwise.
-  const cls = state.view === "grid" ? "grid" : "list";
   if (statusText) {
-    el.className = cls;
     el.innerHTML = `<div class="empty">${esc(statusText)}</div>`;
-    $("filterbar").hidden = true;
     $("sentinel").hidden = true;
     return;
   }
   if (state.error) {
-    el.className = cls;
     el.innerHTML = `<div class="empty">${esc(state.error)}</div>`;
-    $("filterbar").hidden = true;
     $("sentinel").hidden = true;
     return;
   }
 
-  state.shown = state.rows.filter(passesFilters);
   state.rendered = 0;
 
-  if (!state.shown.length) {
-    el.className = cls;
-    el.innerHTML =
-      `<div class="empty">No Pages sites matched${hasFilters() ? " with those filters" : ""}. ` +
-      `Try a shorter search.</div>`;
-    // A page with nothing on it has no facets worth offering, and the counts
-    // would be describing an empty set.
-    $("filterbar").hidden = true;
+  // With no query there is nothing to show, and the tag picker below the hero is
+  // the page's offer. Leaving an empty box there would just be a gap.
+  if (!state.hasQuery || !state.rows.length) {
+    el.innerHTML = state.hasQuery
+      ? `<div class="empty">No Pages sites matched. Try a broader search.</div>`
+      : "";
     $("sentinel").hidden = true;
     return;
   }
-
   renderPage();
-  // Chips last: they count what was actually rendered, so filtering by one
-  // category shows how the rest of the current set is distributed.
-  renderCatChips();
-  renderFacets();
   paintLiveRows();
-}
-
-// ---------------------------------------------------------------- idle state
-
-/**
- * The prompt shown when there is no query.
- *
- * It replaces a front page rather than decorating one. With nothing typed there
- * is no honest list to show: there is no index to browse, and the unfiltered
- * order would be whatever GitHub happened to rank first. So the prompt says what
- * the search covers and offers starting points instead.
- */
-function showIdle(on) {
-  const el = $("idle");
-  if (el) el.hidden = !on;
-  if (on) {
-    // The chips count a result set that is no longer on screen, so they are
-    // cleared rather than merely hidden: leaving them in the DOM means the next
-    // search can read stale counts before its own have arrived.
-    $("filterbar").hidden = true;
-    $("cats").innerHTML = "";
-    $("facets").innerHTML = "";
-    $("results").innerHTML = "";
-    $("sentinel").hidden = true;
-  }
 }
 
 // Infinite page-in, only while more results remain.
 new IntersectionObserver(
   (entries) => {
-    if (entries.some((e) => e.isIntersecting) && state.rendered < state.shown.length) {
+    if (entries.some((e) => e.isIntersecting) && state.rendered < state.rows.length) {
       renderPage();
     }
   },
@@ -750,77 +527,13 @@ $("q").addEventListener("input", () => {
   debounce = setTimeout(() => runSearch({ fresh: true }), DEBOUNCE_MS);
 });
 
-/**
- * An example is an ordinary query: it fills the box and runs the same search a
- * typed one would, rather than reaching into any special state.
- */
-$("examples").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-example]");
-  if (!btn) return;
-  $("q").value = btn.dataset.example;
-  runSearch({ fresh: true });
-});
-
 /** "Show more" is delegated, because the button is re-rendered on every update. */
 document.addEventListener("click", (e) => {
-  if (e.target instanceof HTMLElement && e.target.id === "wide-more") {
+  if (e.target instanceof HTMLElement && e.target.id === "more") {
     runSearch({ more: true });
-  }
-});
-
-$("view").addEventListener("click", () => {
-  state.view = state.view === "row" ? "grid" : "row";
-  const btn = $("view");
-  btn.setAttribute("aria-pressed", String(state.view === "grid"));
-  // The label lives in a <span> so the icon survives the swap.
-  const label = btn.querySelector("span");
-  if (label) label.textContent = state.view === "grid" ? "List view" : "Previews";
-  btn.title = state.view === "grid" ? "Back to list view" : "Show a live preview of each site";
-  renderResults();
-});
-
-$("stars").addEventListener("change", (e) => {
-  state.minStars = Number(e.target.value);
-  refilter();
-});
-
-/**
- * The button only reveals the token field.
- *
- * Searching GitHub is automatic now, so an explicit trigger would suggest the
- * results are optional. It is reduced to the one thing that genuinely needs a
- * click: supplying a token, which raises the limit when the shared budget is
- * exhausted.
- */
-$("wide").addEventListener("click", () => {
-  const showing = $("tokenrow").hidden;
-  $("tokenrow").hidden = !showing;
-  if (showing) $("token").focus();
-  // Re-run only if there is already something to extend.
-  if (!showing && state.lastQuery) runSearch({ fresh: true });
-});
-
-// A token is supplied per tab; it is never written to storage.
-$("token").addEventListener("change", () => {
-  if (state.lastQuery) {
-    // Re-run so the new limit takes effect for the current query.
-    state.lastQuery = "";
-    runSearch({ fresh: true });
   }
 });
 
 // ---------------------------------------------------------------- boot
 
-/**
- * Boot loads the report config only. There is no manifest and no index, so the
- * page costs nothing until a search is typed, and a missing reports.json is
- * harmless: it only decides which repository a report link points at.
- */
-fetch("./data/reports.json")
-  .then((r) => (r.ok ? r.json() : null))
-  .then((cfg) => {
-    if (cfg?.repo) reportRepo = cfg.repo;
-  })
-  .catch(() => {});
-
-showIdle(true);
+renderTagPicker();

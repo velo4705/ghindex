@@ -163,6 +163,7 @@ const TOPIC_MAP = {
   reporting: "dashboards",
 
   // tools & utilities
+  tools: "tools",
   cli: "tools",
   "command-line": "tools",
   "developer-tools": "tools",
@@ -324,8 +325,14 @@ function norm(topic) {
  */
 const SORTED_KEYS = Object.keys(TOPIC_MAP).sort((a, b) => b.length - a.length);
 
-/** Tokens that indicate a technology, used only to explain "Uncategorized". */
-const TECH_TOKENS = new Set([
+/**
+ * Tokens that indicate a technology, used only to explain "Uncategorized".
+ *
+ * BROWSE_TAGS is checked against this set: a tag that means "built with" rather
+ * than "is for" must not appear in the picker, or the picker becomes a second
+ * box for typing a language name and stops being a way to browse.
+ */
+export const TECH_TOKENS = new Set([
   "react", "reactjs", "vue", "vuejs", "angular", "svelte", "nextjs", "nuxt",
   "javascript", "typescript", "js", "html", "html5", "css", "css3", "scss",
   "sass", "less", "tailwind", "tailwindcss", "tailwind-css", "bootstrap",
@@ -334,6 +341,61 @@ const TECH_TOKENS = new Set([
   "cpp", "csharp", "dotnet", "jquery", "webpack", "vite", "rollup", "babel",
   "redux", "vuex", "pwa", "android", "ios", "flutter", "react-native",
 ]);
+
+/**
+ * The tags offered in the picker, as a short browseable list.
+ *
+ * Why a curated list and not "all tags"
+ * -----------------------------------
+ * GitHub has 11,677 distinct topics on this corpus and 72% of them appear
+ * exactly once. A literal "list all tags" would be 11,677 buttons, most of which
+ * lead to a single unrelated repository, and it would be unusable as a browsing
+ * control for that reason alone rather than for lack of space.
+ *
+ * So this is the subset worth offering: tags that describe what a site *is*
+ * rather than what it was built with. The distinction matters because the top
+ * tags on GitHub overall are technologies (react, javascript, html, css), and a
+ * picker built from those is a second search box for a language rather than a
+ * way to discover sites. Technology-only tags are excluded for the same reason
+ * classify() refuses to turn them into a category.
+ *
+ * Ordering is deliberate: broad, high-yield intents first, because those are the
+ * ones a visitor is most likely to want, and the long tail below is the reward
+ * for someone who knows what they are looking for.
+ */
+export const BROWSE_TAGS = [
+  // Broad intents.
+  "portfolio", "blog", "personal-website", "resume", "showcase", "documentation",
+  "games", "tools", "learning", "awesome-list", "static-site-generator",
+
+  // Making and design.
+  "design-system", "ui-kit", "components", "animation", "generative", "webgl",
+  "digital-art", "shader", "creative-coding", "inspiration", "gallery",
+
+  // Data and dashboards.
+  "dashboard", "dataviz", "charts", "analytics", "monitoring", "grafana",
+  "data-visualization", "reporting",
+
+  // Reference and study material.
+  "cheatsheet", "tutorial", "handbook", "roadmap", "interview-prep", "leetcode",
+  "algorithms", "data-structures", "course", "textbook", "lecture-notes", "notes",
+
+  // Tools people actually use.
+  "cli", "editor", "markdown-editor", "unit-converter", "regex", "downloader",
+  "json-formatter", "productivity", "self-hosted", "automation",
+  "web-scraper", "note-taking", "spreadsheet",
+
+  // Games by kind, because "games" alone buries the specific ones.
+  "game-jam", "roguelike", "platformer", "puzzle", "rpg", "tetris", "chess",
+  "phaser", "godot", "unity", "itch",
+
+  // Writing.
+  "writing", "thoughts", "tech-blog", "articles", "jekyll", "hugo", "ghost",
+
+  // Libraries and frameworks.
+  "library", "framework", "boilerplate", "starter", "sdk", "npm-package",
+  "build-tools", "bundler", "state-management", "mobile-development",
+];
 
 /**
  * Classify one record. Multi-label on purpose: a portfolio blog is legitimately

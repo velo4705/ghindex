@@ -4,11 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-<meta name="description" content="Live search of GitHub Pages sites. Results come from GitHub as you type and are link-checked as they load." />
+<title>ghindex — search GitHub Pages sites</title>
+<meta name="description" content="Search GitHub Pages sites live. Results come from GitHub as you type and are link-checked as they load." />
 <meta name="color-scheme" content="dark light" />
 <meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-<title>ghindex — live search of GitHub Pages sites</title>
 <!--
   Edge search worker.
 
@@ -16,31 +16,24 @@
   front of, so the worker runs on its own hostname and is called cross-origin.
   Keeping the token server-side means repeat queries are served from an edge
   cache instead of each visitor spending their own GitHub rate limit, and it is
-  the only way to liveness-check a real-time result, since a browser cannot make
-  a cross-origin HEAD and get an answer.
+  the only way to liveness-check a result, since a browser cannot make a
+  cross-origin HEAD and get an answer.
 
   Clear this value and the page talks to GitHub directly instead, using each
   visitor's own IP budget. Search works either way, so a worker outage is a
   slower search rather than a broken one.
 -->
-<!--
-  There is no local index behind this page. Results are asked of GitHub at the
-  moment of the search and link-checked as they arrive, so there is nothing to
-  keep fresh and no snapshot to go stale. The cost is a shared rate-limit budget,
-  which is why the search waits for typing to pause.
--->
 <meta name="ghindex-edge" content="https://ghindex-search.ghindex.workers.dev" />
 <style>
   /* ---------------------------------------------------------------------
-     Design tokens. One scale for colour, radius, shadow and motion so the
-     two themes stay in step. Light is the default; dark is opt-in via the
-     user's system preference.
+     Design tokens. One scale for colour, radius and motion so the two themes
+     stay in step. Light is the default; dark is opt-in via the user's system
+     preference.
      --------------------------------------------------------------------- */
   :root {
     color-scheme: light dark;
 
     --bg:          #ffffff;
-    --bg-subtle:   #f7f8fa;
     --surface:     #ffffff;
     --surface-2:   #f7f8fa;
     --fg:          #14161a;
@@ -53,7 +46,10 @@
     --accent-soft: #eef2ff;
     --chip:        #f2f4f7;
     --chip-border: #e4e7ec;
-    --danger:      #b42318;
+    --live:        #1a7f4b;
+    --blocked:     #8a6d1f;
+    --gone:        #a33;
+    --star:        #b8860b;
 
     --r-sm: 6px;
     --r-md: 10px;
@@ -62,19 +58,17 @@
 
     --shadow-sm: 0 1px 2px rgb(16 24 40 / .05);
     --shadow-md: 0 4px 12px -2px rgb(16 24 40 / .08), 0 2px 4px -2px rgb(16 24 40 / .04);
-    --shadow-lg: 0 12px 32px -8px rgb(16 24 40 / .16);
 
     --ease: cubic-bezier(.2, .7, .3, 1);
     --fast: 120ms var(--ease);
     --med:  200ms var(--ease);
 
-    --maxw: 1360px;
+    --maxw: 680px;
   }
 
   @media (prefers-color-scheme: dark) {
     :root {
       --bg:          #0b0e14;
-      --bg-subtle:   #0e1219;
       --surface:     #12161f;
       --surface-2:   #171c26;
       --fg:          #e8ebf0;
@@ -87,10 +81,12 @@
       --accent-soft: #1a1f38;
       --chip:        #1a1f29;
       --chip-border: #262d3a;
-      --danger:      #f97066;
+      --live:        #4ec98a;
+      --blocked:     #d9b64a;
+      --gone:        #e0756a;
+      --star:        #d9b64a;
       --shadow-sm: 0 1px 2px rgb(0 0 0 / .4);
       --shadow-md: 0 4px 14px -2px rgb(0 0 0 / .5);
-      --shadow-lg: 0 16px 40px -12px rgb(0 0 0 / .65);
     }
   }
 
@@ -111,97 +107,71 @@
 
   a { color: var(--accent); }
 
-  :where(a, button, input, select, [tabindex]):focus-visible {
+  :where(a, button, input, [tabindex]):focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
     border-radius: var(--r-sm);
   }
 
-  /* ---------------------------------------------------------- header */
+  /* ---------------------------------------------------------- hero */
 
-  header {
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    background: color-mix(in srgb, var(--bg) 82%, transparent);
-    backdrop-filter: saturate(1.6) blur(12px);
-    -webkit-backdrop-filter: saturate(1.6) blur(12px);
-    border-bottom: 1px solid var(--border);
-  }
-
-  .wrap {
+  /*
+     The page is one centred column. There is no navigation and no chrome,
+     because there is nothing to navigate to: every result is a link out to
+     someone else's site, and the only thing this page offers is a way to find
+     one. So the search is the page, and it is given the room to be the page.
+  */
+  main {
     max-width: var(--maxw);
     margin: 0 auto;
-    padding: 0 clamp(1rem, 3vw, 2rem);
+    padding: clamp(3rem, 14vh, 8rem) clamp(1rem, 5vw, 1.5rem) 4rem;
   }
 
-  header .wrap { padding-top: .9rem; padding-bottom: .85rem; }
-
-  .brandrow {
-    display: flex;
-    align-items: center;
-    gap: .6rem;
-    flex-wrap: wrap;
-    margin-bottom: .8rem;
-  }
-
-  .logo {
-    display: grid;
-    place-items: center;
-    width: 26px; height: 26px;
-    border-radius: 7px;
-    background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #06b6d4));
-    color: #fff;
-    font-size: .78rem;
-    font-weight: 700;
-    letter-spacing: -.02em;
-    box-shadow: var(--shadow-sm);
-    flex: none;
-  }
+  .hero { text-align: center; }
 
   h1 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 640;
-    letter-spacing: -.011em;
+    font-size: clamp(2rem, 7vw, 2.9rem);
+    font-weight: 680;
+    letter-spacing: -.03em;
+    line-height: 1.1;
   }
 
-  .sub { color: var(--fg-muted); font-size: .8rem; }
-  .sub b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
-
-  /* ---------------------------------------------------------- controls */
-
-  .controls { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
-
-  .search {
-    position: relative;
-    flex: 1 1 280px;
-    min-width: 0;
+  .tagline {
+    margin: .55rem 0 0;
+    color: var(--fg-muted);
+    font-size: clamp(.95rem, 2.4vw, 1.05rem);
   }
 
-  .search svg {
+  /* ---------------------------------------------------------- search */
+
+  .searchbox { position: relative; margin-top: 2rem; }
+
+  .searchbox svg {
     position: absolute;
-    left: .7rem; top: 50%;
+    left: 1rem; top: 50%;
     translate: 0 -50%;
-    width: 15px; height: 15px;
+    width: 18px; height: 18px;
     color: var(--fg-subtle);
     pointer-events: none;
   }
 
   input[type=search] {
     width: 100%;
-    padding: .58rem .75rem .58rem 2.1rem;
+    padding: .95rem 1rem .95rem 2.9rem;
     font: inherit;
-    font-size: .95rem;
+    font-size: 1.05rem;
     color: var(--fg);
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--r-md);
+    border-radius: var(--r-lg);
     box-shadow: var(--shadow-sm);
     transition: border-color var(--fast), box-shadow var(--fast);
   }
   input[type=search]::placeholder { color: var(--fg-subtle); }
-  input[type=search]:hover { border-color: color-mix(in srgb, var(--border) 60%, var(--fg-subtle)); }
+  input[type=search]:hover {
+    border-color: color-mix(in srgb, var(--border) 60%, var(--fg-subtle));
+  }
   input[type=search]:focus {
     outline: none;
     border-color: var(--accent);
@@ -209,146 +179,168 @@
   }
   input[type=search]::-webkit-search-cancel-button { cursor: pointer; }
 
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: .4rem;
-    padding: .55rem .8rem;
-    font: inherit;
-    font-size: .875rem;
-    font-weight: 500;
-    color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    box-shadow: var(--shadow-sm);
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background var(--fast), border-color var(--fast),
-                color var(--fast), translate var(--fast);
-  }
-  .btn:hover { background: var(--surface-2); border-color: color-mix(in srgb, var(--border) 55%, var(--fg-subtle)); }
-  .btn:active { translate: 0 1px; }
-  .btn svg { width: 15px; height: 15px; }
-
-  .btn[aria-pressed=true] {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-fg);
-    font-weight: 600;
-  }
-
-  select {
-    padding: .55rem 1.9rem .55rem .75rem;
-    font: inherit;
-    font-size: .875rem;
-    color: var(--fg);
-    background: var(--surface) no-repeat right .6rem center / 11px auto;
-    background-image: linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
-                      linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
-    background-position: right .95rem center, right .68rem center;
-    background-size: 5px 5px, 5px 5px;
-    background-repeat: no-repeat;
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    box-shadow: var(--shadow-sm);
-    cursor: pointer;
-    appearance: none;
-    transition: border-color var(--fast);
-  }
-  select:hover { border-color: color-mix(in srgb, var(--border) 55%, var(--fg-subtle)); }
-
-  /* ---------------------------------------------------------- filters */
-
-  .filterbar { display: flex; flex-direction: column; gap: .4rem; margin-top: .8rem; }
-
-  .chips { display: flex; gap: .35rem; flex-wrap: wrap; }
-
-  .cat {
-    display: inline-flex;
-    align-items: baseline;
-    gap: .3rem;
-    padding: .32rem .68rem;
-    font: inherit;
-    font-size: .82rem;
-    font-weight: 500;
-    color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-full);
-    cursor: pointer;
-    box-shadow: var(--shadow-sm);
-    transition: background var(--fast), border-color var(--fast), color var(--fast);
-  }
-  .cat:hover { border-color: var(--accent); color: var(--accent); }
-  .cat[aria-pressed=true] {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-fg);
-  }
-  .cat[aria-pressed=true] .n { color: color-mix(in srgb, var(--accent-fg) 75%, transparent); }
-  .cat .n {
-    font-size: .72rem;
-    font-weight: 500;
+  /*
+     One line of help, under the box. It says the two things a visitor cannot
+     guess: that results arrive as they type rather than on submit, and that
+     what comes back is live rather than a stored index. Both are true and both
+     change what the page is, so neither is decoration.
+  */
+  .help {
+    margin: .85rem auto 0;
+    max-width: 46ch;
     color: var(--fg-subtle);
-    font-variant-numeric: tabular-nums;
+    font-size: .82rem;
   }
 
-  .facet {
-    display: inline-flex;
-    align-items: baseline;
-    gap: .25rem;
-    padding: .18rem .55rem;
+  /* ---------------------------------------------------------- tag picker */
+
+  /*
+     Tags, for someone who would rather browse than type. A curated list rather
+     than every tag GitHub has, because GitHub has 11,677 distinct ones and 72%
+     of those appear exactly once: a complete list would be 11,677 buttons, most
+     of which lead to nothing. This is the set of tags that reliably mean
+     something, so it is short enough to scan.
+  */
+  .tagpick { margin-top: 2.25rem; }
+
+  .tagpick > h2 {
+    margin: 0 0 .7rem;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--fg-subtle);
+    text-align: center;
+  }
+
+  /*
+     The picker is a single wrapped strip, not a grid of cards. Eighty-odd
+     equal-weight chips would read as the page's main content, which is the
+     opposite of the truth: it is a convenience below a search box, and the
+     results are what the visitor came for.
+  */
+  .taglist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem;
+    justify-content: center;
+  }
+
+  /*
+     Collapsed to one line by default, with the rest behind a toggle.
+
+     Every tag on one screen was tried and it was the wrong shape: it pushed the
+     results roughly 900px down the page, so a visitor who searched had to scroll
+     past 83 buttons to reach their answer. Showing the first handful and letting
+     the rest be asked for keeps the picker useful without making it the page.
+  */
+  .taglist.collapsed { max-height: 2.1rem; overflow: hidden; }
+
+  .tagbtn {
+    padding: .22rem .6rem;
     font: inherit;
-    font-size: .74rem;
-    color: var(--fg-muted);
-    background: var(--chip);
-    border: 1px solid var(--chip-border);
+    font-size: .78rem;
+    line-height: 1.5;
+    color: var(--fg-subtle);
+    background: transparent;
+    border: 1px solid var(--border-soft);
     border-radius: var(--r-full);
     cursor: pointer;
-    transition: background var(--fast), color var(--fast), border-color var(--fast);
+    transition: color var(--fast), border-color var(--fast), background var(--fast);
   }
-  .facet:hover { color: var(--fg); border-color: var(--accent); }
-  .facet[aria-pressed=true] {
-    background: var(--accent-soft);
-    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  .tagbtn:hover {
     color: var(--accent);
+    border-color: color-mix(in srgb, var(--border) 45%, var(--accent));
+    background: var(--accent-soft);
+  }
+  .tagbtn[aria-pressed=true] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
     font-weight: 600;
   }
-  .facet .n { color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
 
-  /* ---------------------------------------------------------- main */
-
-  main { padding: 1.1rem clamp(1rem, 3vw, 2rem) 4rem; }
-
-  .meta {
-    color: var(--fg-muted);
-    font-size: .8rem;
-    font-variant-numeric: tabular-nums;
-    margin: .2rem 0 .9rem;
-    min-height: 1.2em;
+  .tagmore {
+    padding: .22rem .6rem;
+    font: inherit;
+    font-size: .78rem;
+    line-height: 1.5;
+    color: var(--fg-subtle);
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: var(--r-full);
+    cursor: pointer;
+    transition: color var(--fast), border-color var(--fast);
   }
+  .tagmore:hover { color: var(--accent); border-color: var(--accent); }
 
-  /* ---------------------------------------------------------- list */
+  /* ---------------------------------------------------------- results */
 
-  .list { display: flex; flex-direction: column; gap: .5rem; }
+  /*
+     Results start below the fold on a short viewport and are full width of the
+     column. They are the reason the page exists, so once there are some they
+     are allowed to push the hero off rather than sharing space with it.
+  */
+  #results {
+    margin-top: 2.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+  }
+  #results:empty { margin-top: 0; }
+
+  /* The "show more" control is a pill like the tag buttons, so it does not read
+     as a different kind of thing. It sits centred under the results. */
+  #more { display: block; margin: .9rem auto 0; padding: .4rem .9rem; }
+
+  .note {
+    margin: .2rem 0 0;
+    color: var(--fg-subtle);
+    font-size: .78rem;
+    text-align: center;
+  }
+  .note.warn { color: var(--fg-muted); }
+
+  .empty {
+    padding: 2.5rem 1rem;
+    text-align: center;
+    color: var(--fg-muted);
+    border: 1px dashed var(--border);
+    border-radius: var(--r-lg);
+    background: var(--surface-2);
+  }
 
   .row {
-    padding: .85rem 1rem;
+    padding: .9rem 1.05rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
     box-shadow: var(--shadow-sm);
-    transition: box-shadow var(--med), border-color var(--med), translate var(--med);
+    transition: box-shadow var(--med), border-color var(--med);
   }
   .row:hover {
     border-color: color-mix(in srgb, var(--border) 50%, var(--accent));
     box-shadow: var(--shadow-md);
-    translate: 0 -1px;
   }
 
-  .row h3 { margin: 0 0 .15rem; font-size: .95rem; font-weight: 600; letter-spacing: -.006em; }
-  .row h3 a { text-decoration: none; }
+  /* The title carries the pills, so it is a flex row that may wrap. */
+  .row h3 {
+    margin: 0;
+    font-size: .95rem;
+    font-weight: 600;
+    letter-spacing: -.006em;
+    display: flex;
+    align-items: baseline;
+    gap: .35rem;
+    flex-wrap: wrap;
+  }
+  .row h3 a {
+    text-decoration: none;
+    /* A long owner/repo is the common case, not the exception, so it is allowed
+       to break rather than pushing the badges onto their own line. */
+    word-break: break-word;
+    min-width: 0;
+  }
   .row h3 a:hover { text-decoration: underline; text-underline-offset: 2px; }
 
   .url {
@@ -356,214 +348,42 @@
     font-size: .75rem;
     word-break: break-all;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    margin-top: .2rem;
   }
 
   .desc {
     color: var(--fg-muted);
     font-size: .875rem;
-    margin-top: .35rem;
+    margin-top: .4rem;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
 
-  .tags { display: flex; gap: .3rem; flex-wrap: wrap; align-items: center; margin-top: .5rem; }
+  /*
+     Topics per row are de-emphasised hard: the picker above already offers
+     topics, so repeating them at full strength on every row is noise competing
+     with the thing a visitor actually reads, which is the title and the link.
+  */
+  .tags { display: flex; gap: .25rem; flex-wrap: wrap; margin-top: .5rem; }
   .tag {
-    font-size: .68rem;
-    padding: .1rem .45rem;
+    font-size: .66rem;
+    padding: .05rem .4rem;
     border-radius: var(--r-full);
-    background: var(--chip);
-    border: 1px solid var(--chip-border);
-    color: var(--fg-muted);
-  }
-  .cat-chip {
-    font-size: .68rem;
-    font-weight: 500;
-    padding: .1rem .5rem;
-    border-radius: var(--r-full);
-    background: var(--accent-soft);
-    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-    color: var(--accent);
-  }
-
-  .row-actions { display: flex; gap: .9rem; margin-top: .55rem; }
-  .row-actions a {
-    font-size: .72rem;
-    color: var(--fg-subtle);
-    text-decoration: none;
-    opacity: .75;
-    transition: color var(--fast), opacity var(--fast);
-  }
-  .row-actions a:hover { color: var(--accent); opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
-
-  /* ---------------------------------------------------------- grid */
-
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-    gap: .85rem;
-    align-content: start;
-  }
-
-  .card {
-    display: flex;
-    flex-direction: column;
-    height: 292px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    overflow: hidden;
-    box-shadow: var(--shadow-sm);
-    transition: box-shadow var(--med), border-color var(--med), translate var(--med);
-  }
-  .card:hover {
-    border-color: color-mix(in srgb, var(--border) 45%, var(--accent));
-    box-shadow: var(--shadow-lg);
-    translate: 0 -2px;
-  }
-
-  .card .frame {
-    position: relative;
-    flex: 0 0 auto;
-    height: 178px;
-    background: var(--bg-subtle);
-    border-bottom: 1px solid var(--border-soft);
-  }
-  .card .frame iframe { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
-  .card .frame .fallback {
-    position: absolute;
-    inset: 0;
-    display: none;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: .3rem;
-    color: var(--fg-subtle);
-    font-size: .78rem;
-    text-align: center;
-    padding: 1rem;
-  }
-
-  /* Holds the liveness and star pills on their own line, so the title below is
-     not interrupted by inline badges. */
-  .card-head { display: flex; gap: .25rem; align-items: center; min-height: 1em; }
-
-  .card .info { padding: .6rem .7rem .7rem; display: flex; flex-direction: column; gap: .2rem; min-height: 0; }
-  .card .title {
-    font-size: .85rem;
-    font-weight: 600;
-    color: var(--fg);
-    text-decoration: none;
-    letter-spacing: -.005em;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .card .title:hover { color: var(--accent); }
-  .card .u {
-    font-size: .68rem;
-    color: var(--fg-subtle);
-    word-break: break-all;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-    display: -webkit-box;
-    -webkit-line-clamp: 1;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .card .tags { margin-top: auto; }
-
-  /* ---------------------------------------------------------- token row */
-
-  .tokenrow { margin-top: .7rem; }
-  .tokenrow input {
-    width: 100%;
-    max-width: 420px;
-    padding: .45rem .65rem;
-    font: inherit;
-    font-size: .85rem;
-    color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-  }
-  .tokenhelp { margin: .35rem 0 0; color: var(--fg-subtle); font-size: .72rem; max-width: 560px; }
-
-  /* ---------------------------------------------------------- result meta */
-
-  /* The summary line under the search box, and the "show more" control that
-     lives with it. Both describe the one live result set. */
-  #results p.note { margin: .6rem 0 0; color: var(--fg-muted); font-size: .8rem; }
-  #wide-more { margin-top: .8rem; }
-  /* ------------------------------------------------------------- idle state */
-  /* Shown when nothing has been typed. This is the entire first impression, so
-     it states what the search covers rather than trying to be a browsable
-     index: with no query the only honest ordering is by stars, and that leads
-     with documentation and "awesome" lists, which answers nothing. */
-  #idle { padding: 11vh 0 0; max-width: 660px; }
-  #idle h2 {
-    margin: 0 0 .45rem;
-    font-size: 1.4rem;
-    font-weight: 640;
-    letter-spacing: -.018em;
-  }
-  #idle .lede {
-    margin: 0 0 1.4rem;
-    max-width: 48ch;
-    color: var(--fg-muted);
-    font-size: .95rem;
-  }
-
-  .examples { display: flex; gap: .4rem; flex-wrap: wrap; }
-  /* An example is just a query you did not have to type, so it should read as
-     a chip on the box rather than as a card. */
-  .ex {
-    font: inherit;
-    font-size: .85rem;
-    padding: .32rem .72rem;
-    color: var(--fg-muted);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-full);
-    cursor: pointer;
-    box-shadow: var(--shadow-sm);
-    transition: color var(--fast), border-color var(--fast);
-  }
-  .ex:hover {
-    color: var(--accent);
-    border-color: color-mix(in srgb, var(--border) 45%, var(--accent));
-  }
-
-  /* The box is the product, so it grows while it is the only thing on screen
-     and settles back once there are results to read. */
-  body:has(#idle:not([hidden])) input[type=search] {
-    font-size: 1.05rem;
-    padding-top: .72rem;
-    padding-bottom: .72rem;
-  }
-
-  /* Star counts drive the ranking, so show them rather than hiding the signal. */
-  .pill.stars {
     background: transparent;
-    border-color: var(--star, #b8860b);
-    color: var(--star, #b8860b);
-    font-variant-numeric: tabular-nums;
+    border: 1px solid var(--border-soft);
+    color: var(--fg-subtle);
   }
-  /* Liveness verdicts. Deliberately toned down: a dead link is worth flagging,
-     but it is not a dramatic event, and the site may come back. */
-  .pill.live-checking { opacity: .55; font-style: italic; }
-  .pill.live-alive { color: #1a7f4b; border-color: #1a7f4b; }
-  .pill.live-blocked { color: #8a6d1f; border-color: #b8932f; }
-  .pill.live-gone { color: #a33; border-color: #a33; }
-  .pill.live-unknown { opacity: .7; }
-  /* Dim a confirmed dead row rather than removing it: the reader may still want
-     to see that the repo claims Pages is on while nothing is served. */
-  #results .row.is-gone { opacity: .55; }
-  #results .row.is-gone .url { text-decoration: line-through; text-decoration-thickness: 1px; }
-  #results .card.is-gone { opacity: .55; }
+
+  /*
+     Liveness verdicts and star counts. Both are small pills beside the title.
+     They are toned down on purpose: a dead link is worth flagging, but it is
+     not a dramatic event, and the site may come back.
+  */
   .pill {
     display: inline-block;
+    flex: none;
     font-size: .62rem;
     font-weight: 600;
     letter-spacing: .04em;
@@ -574,10 +394,29 @@
     color: var(--accent);
     border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   }
+  .pill.live-checking { opacity: .55; font-style: italic; }
+  .pill.live-alive    { color: var(--live); border-color: color-mix(in srgb, var(--live) 45%, transparent); background: transparent; }
+  .pill.live-blocked  { color: var(--blocked); border-color: color-mix(in srgb, var(--blocked) 45%, transparent); background: transparent; }
+  .pill.live-gone     { color: var(--gone); border-color: color-mix(in srgb, var(--gone) 45%, transparent); background: transparent; }
+  .pill.live-unknown  { opacity: .7; background: transparent; }
+  .pill.stars {
+    background: transparent;
+    border-color: var(--star);
+    color: var(--star);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A confirmed dead row is dimmed rather than removed: a transient failure
+     should not hide a result, and the dead link is still a fact worth seeing. */
+  .row.is-gone { opacity: .55; }
+  .row.is-gone .url { text-decoration: line-through; text-decoration-thickness: 1px; }
 
   /* ---------------------------------------------------------- misc */
 
+  /* The scroll sentinel: a 1px target for the IntersectionObserver that pages
+     results in. It carries no visual weight and must not add height. */
   .sentinel { height: 1px; }
+
   .sr {
     position: absolute; width: 1px; height: 1px;
     padding: 0; margin: -1px; overflow: hidden;
@@ -585,24 +424,15 @@
   }
   [hidden] { display: none !important; }
 
-  .empty {
-    padding: 3rem 1rem;
-    text-align: center;
-    color: var(--fg-muted);
-    border: 1px dashed var(--border);
-    border-radius: var(--r-lg);
-    background: var(--bg-subtle);
-  }
-
-  
-
   footer {
-    border-top: 1px solid var(--border);
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 2rem clamp(1rem, 5vw, 1.5rem) 3rem;
+    border-top: 1px solid var(--border-soft);
     color: var(--fg-subtle);
-    font-size: .78rem;
+    font-size: .75rem;
+    text-align: center;
   }
-  footer .wrap { padding: 1.2rem clamp(1rem, 3vw, 2rem); }
-  footer a { color: var(--fg-muted); }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -614,121 +444,55 @@
 </style>
 </head>
 <body>
-<header>
-  <div class="wrap">
-    <div class="brandrow">
-      <span class="logo" aria-hidden="true">gh</span>
-      <h1>ghindex</h1>
-      <span class="sub" id="count">live search of GitHub Pages sites</span>
-    </div>
-
-    <form role="search" id="f" class="controls">
-      <div class="search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-             stroke-linecap="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
-        </svg>
-        <label class="sr" for="q">Search GitHub for Pages sites</label>
-        <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
-               placeholder="Search GitHub Pages sites…" />
-      </div>
-
-      <button type="button" id="wide" class="btn"
-              title="GitHub is searched automatically as you type. Add a token to raise the search rate limit.">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5M11 8v6M8 11h6" />
-        </svg>
-        <span>Search rate limit</span>
-      </button>
-
-      <button type="button" id="view" class="btn" aria-pressed="false"
-              title="Show a live preview of each site">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="7" height="7" rx="1.5" />
-          <rect x="14" y="3" width="7" height="7" rx="1.5" />
-          <rect x="3" y="14" width="7" height="7" rx="1.5" />
-          <rect x="14" y="14" width="7" height="7" rx="1.5" />
-        </svg>
-        <span>Previews</span>
-      </button>
-
-      <label class="sr" for="stars">Minimum stars</label>
-      <select id="stars">
-        <option value="0">Any stars</option>
-        <option value="1">1+ stars</option>
-        <option value="10">10+ stars</option>
-        <option value="50">50+ stars</option>
-        <option value="200">200+ stars</option>
-      </select>
-    </form>
-
-    <div class="tokenrow" id="tokenrow" hidden>
-      <label class="sr" for="token">GitHub token</label>
-      <input id="token" type="password" autocomplete="off" spellcheck="false"
-             placeholder="Optional: a read-only token raises the search rate limit" />
-      <p class="tokenhelp">
-        Kept in this tab only and sent straight to GitHub. Never stored by this site,
-        which has no server. A public, read-only token with no scopes is enough.
-      </p>
-    </div>
-
-    <!-- Category and topic counts describe the results currently on screen,
-       derived from the topics GitHub just returned. They are empty until a
-       search runs, because there is no index to draw a global count from. -->
-  <div class="filterbar" id="filterbar" hidden>
-      <div class="chips" id="cats" role="group" aria-label="Browse by category"></div>
-      <div class="chips" id="facets" role="group" aria-label="Filter by topic"></div>
-    </div>
-  </div>
-</header>
-
-<main class="wrap">
-  <!-- Shown when JS is unavailable or the worker fails; hidden once the app boots. -->
+<main>
   <noscript>
-    <p class="meta">
-      This search needs JavaScript: results are requested from GitHub as you
-      type and link-checked as they arrive, which a static page cannot do. With
-      JavaScript off you can still search GitHub directly:
+    <p class="note warn">
+      This search needs JavaScript: results are requested from GitHub as you type
+      and link-checked as they arrive, which a static page cannot do. You can
+      still search GitHub directly:
       <a href="https://github.com/search?q=topic%3Agithub-pages&amp;type=repositories">github.com/search</a>
     </p>
   </noscript>
-  <div class="meta" id="meta" role="status" aria-live="polite"></div>
+
+  <div class="hero">
+    <h1>ghindex</h1>
+    <p class="tagline">Search every GitHub Pages site on GitHub.</p>
+
+    <form role="search" class="searchbox" id="f">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+           stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+      </svg>
+      <label class="sr" for="q">Search GitHub for Pages sites</label>
+      <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Search owner, repo, title or topic…" />
+    </form>
+
+    <p class="help">
+      Results come from GitHub as you type, and each one is checked to confirm it
+      is really serving right now.
+    </p>
+  </div>
 
   <!--
-    The prompt shown when nothing has been typed. There is no front page: this
-    is the whole first impression, so it says what the search covers and offers
-    a few starting points. Every example here is verified to return results by
-    src/publish/test-idle.ts, so none of them can dead-end on arrival.
+    Tag picker. Every tag here is one that reliably describes what a site is,
+    rather than what it was built with: browsing by technology is how you end up
+    looking at a thousand React sites and no portfolio. Clicking one searches for
+    it, and it stays selected so you can tell what you are looking at.
   -->
-  <section id="idle" aria-label="Getting started">
-    <h2>Type what you want to find</h2>
-    <p class="lede">
-      Searches GitHub for Pages-enabled repositories as you type, by owner,
-      repository, title, topic or description, and checks that each result is
-      actually serving right now.
-    </p>
-    <div class="examples" id="examples" role="group" aria-label="Example searches">
-      <button type="button" class="ex" data-example="chess">chess</button>
-      <button type="button" class="ex" data-example="music">music</button>
-      <button type="button" class="ex" data-example="terminal">terminal</button>
-      <button type="button" class="ex" data-example="wasm">wasm</button>
-      <button type="button" class="ex" data-example="blog">blog</button>
-    </div>
+  <!-- The list starts collapsed to one line; "all N" expands it. -->
+  <section class="tagpick" aria-label="Browse by topic">
+    <h2>Browse by topic</h2>
+    <div class="taglist collapsed" id="taglist"></div>
   </section>
 
-  <div id="results" class="list"></div>
-  <div class="sentinel" id="sentinel"></div>
+  <div id="results"></div>
+  <div class="sentinel" id="sentinel" hidden></div>
 </main>
 
 <footer>
-  <div class="wrap">
-    <p>
-      ghindex is an independent project and is not affiliated with GitHub.
-      Results come straight from GitHub and are link-checked as they load.
-    </p>
-  </div>
+  ghindex is an independent project and is not affiliated with GitHub. Results
+  come straight from GitHub and are link-checked as they load.
 </footer>
 
 <script type="module" src="./app.js"></script>

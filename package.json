@@ -6,10 +6,10 @@
     "serve": "bun run serve.ts",
     "reports": "bun run src/publish/reports.ts",
     "test": "bun run src/site/taxonomy-test.ts && bun run src/publish/test-wide-search.ts",
-    "test:idle": "bun run src/publish/test-idle.ts",
+    "test:front-end": "bun run src/publish/test-front-end.ts",
     "test:worker": "bun run worker/test-worker.ts",
     "test:ci-compat": "bun run src/quality/test-ci-compat.ts",
     "test:browser": "bun run src/quality/verify-browser.ts",
-    "test:all": "bun run test && bun run test:idle && bun run test:worker && bun run test:ci-compat && bun run test:browser"
+    "test:all": "bun run test && bun run test:front-end && bun run test:worker && bun run test:ci-compat && bun run test:browser"
   }
 }

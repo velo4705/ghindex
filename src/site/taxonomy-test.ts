@@ -1,5 +1,5 @@
 /** Direct unit checks on the classifier, independent of corpus shape. */
-import { classify, CATEGORIES } from "./taxonomy.js";
+import { classify, CATEGORIES, BROWSE_TAGS, TECH_TOKENS } from "./taxonomy.js";
 
 let fail = 0;
 const t = (name: string, got: string[], want: string[]) => {
@@ -56,8 +56,42 @@ console.log(`  evidence: ${JSON.stringify(ev.evidence)}`);
 if (!ev.evidence.portfolio?.length) { console.log("  FAIL no evidence for portfolio"); fail++; }
 
 console.log("=== every category constant is a valid key ===");
-// compile-time guarantee via types; runtime check that map covers all
 console.log(`  categories: ${CATEGORIES.join(", ")}`);
+
+console.log("=== the tag picker's list ===");
+let tfail = 0;
+const ok = (name: string, cond: boolean, detail = "") => {
+  console.log(`  ${cond ? "PASS" : "FAIL"}  ${name}${cond ? "" : `  ${detail}`}`);
+  if (!cond) tfail++;
+};
+
+ok("the picker offers tags", BROWSE_TAGS.length >= 20, `${BROWSE_TAGS.length}`);
+ok(
+  "no duplicate tags",
+  new Set(BROWSE_TAGS).size === BROWSE_TAGS.length,
+  BROWSE_TAGS.filter((t, i) => BROWSE_TAGS.indexOf(t) !== i).join(", "),
+);
+ok(
+  "every tag is a lowercase slug",
+  BROWSE_TAGS.every((t) => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(t)),
+  BROWSE_TAGS.filter((t) => !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(t)).join(", "),
+);
+// The picker exists to browse by purpose, not by technology. A tag that only
+// says what a site was built with turns it into a second box for typing a
+// language name, which is exactly what the search box above already does.
+ok(
+  "no technology-only tags in the picker",
+  BROWSE_TAGS.every((t) => !TECH_TOKENS.has(t)),
+  BROWSE_TAGS.filter((t) => TECH_TOKENS.has(t)).join(", "),
+);
+// A tag in the picker that the classifier does not recognise would be a control
+// that searches for something and then files it as uncategorised.
+ok(
+  "every picker tag is one the classifier understands",
+  BROWSE_TAGS.every((t) => classify([t]).categories.length > 0),
+  BROWSE_TAGS.filter((t) => classify([t]).categories.length === 0).join(", "),
+);
+fail += tfail;
 
 console.log(`\n${fail === 0 ? "ALL CLASSIFIER CHECKS PASSED" : `${fail} CHECK(S) FAILED`}`);
 process.exit(fail === 0 ? 0 : 1);
