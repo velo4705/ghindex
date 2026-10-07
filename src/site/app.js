@@ -49,6 +49,15 @@ const LIVE_CHECK_LIMIT = 24;
 /** URLs per batch. The worker allows twelve per call and six distinct hosts. */
 const LIVE_CHECK_CHUNK = 6;
 
+/**
+ * Tags shown before the picker is expanded.
+ *
+ * Sized to sit on roughly one row at desktop width, so the collapsed picker is
+ * a single quiet strip and the expanded one is available without the default
+ * state having already spent a screen of the page.
+ */
+const TAGS_COLLAPSED = 11;
+
 // ---------------------------------------------------------------- state
 
 const state = {
@@ -64,6 +73,10 @@ const state = {
   lastQuery: "",
   /** The tag currently selected in the picker, or "". */
   tag: "",
+  /** The full curated tag list, loaded once from taxonomy.js. */
+  tags: null,
+  /** Whether the picker is showing every tag or just the first few. */
+  tagsOpen: false,
   /** Liveness verdicts, keyed by site URL. */
   live: new Map(),
   verifyToken: 0,
@@ -217,45 +230,56 @@ function resetSearch() {
 // ---------------------------------------------------------------- tag picker
 
 /**
- * The tag picker: a short list of topics worth browsing, drawn once at boot.
+ * Draw the tag picker.
  *
- * It is not derived from results. The previous version computed category chips
- * from whatever GitHub had just returned, which meant the control that was
- * supposed to help you *find* things could only describe what you had already
- * found, and its counts changed with every keystroke. A fixed list is a
- * starting point you can act on before you have any results at all.
+ * Collapsed by default, showing a short row rather than all sixty-odd tags. An
+ * earlier attempt did this in CSS with `max-height` plus `overflow: hidden`,
+ * which cut the list off part-way through a wrapped row: the bottom chips were
+ * sliced in half, and the button did not reliably restore the short state. This
+ * slices the array instead, so a collapsed list is always whole rows and the
+ * two states are exact opposites of each other.
+ *
+ * The module is imported once and cached, so re-rendering costs nothing.
  */
 async function renderTagPicker() {
   const host = $("taglist");
   if (!host) return;
-
-  // The module is imported once and the buttons written once. Later calls only
-  // restate which tag is selected, because rebuilding the list on every click
-  // would drop the button the visitor is interacting with out from under the
-  // pointer mid-click.
-  if (!host.childElementCount) {
-    let tags = [];
+  if (!state.tags) {
     try {
-      ({ BROWSE_TAGS: tags } = await import("./taxonomy.js"));
+      const { BROWSE_TAGS } = await import("./taxonomy.js");
+      state.tags = BROWSE_TAGS;
     } catch {
       // The picker is a convenience; a failure to load it must not break search.
       return;
     }
-    host.innerHTML = tags
-      .map((t) => `<button type="button" class="tagbtn" data-tag="${esc(t)}" aria-pressed="false">${esc(t)}</button>`)
-      .join("");
   }
 
-  for (const btn of host.querySelectorAll(".tagbtn")) {
-    btn.setAttribute("aria-pressed", String(btn.dataset.tag === state.tag));
-  }
+  const all = state.tags;
+  const shown = state.tagsOpen ? all : all.slice(0, TAGS_COLLAPSED);
+
+  host.innerHTML =
+    shown
+      .map((t) => `<button type="button" class="tagbtn" data-tag="${esc(t)}" aria-pressed="${state.tag === t}">${esc(t)}</button>`)
+      .join("") +
+    (all.length > TAGS_COLLAPSED
+      ? `<button type="button" class="tagmore" id="tagmore" aria-expanded="${state.tagsOpen}">${
+          state.tagsOpen ? "fewer" : `+${all.length - TAGS_COLLAPSED}`
+        }</button>`
+      : "");
 }
 
 /**
- * Selecting a tag searches for that topic. Selecting the selected tag clears it,
- * so the control is a toggle rather than a one-way door.
+ * The tag picker: a short row of topics worth browsing, expandable to all of them.
  */
 $("taglist").addEventListener("click", (e) => {
+  // The expander shares the container with the tags, so it is matched first: it
+  // carries no data-tag and would otherwise fall through as a tag deselection.
+  if (e.target.closest("#tagmore")) {
+    state.tagsOpen = !state.tagsOpen;
+    renderTagPicker();
+    return;
+  }
+
   const btn = e.target.closest(".tagbtn");
   if (!btn) return;
   const tag = btn.dataset.tag;

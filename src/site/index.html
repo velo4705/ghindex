@@ -116,30 +116,26 @@
   /* ---------------------------------------------------------- hero */
 
   /*
-     The page is one centred column. There is no navigation and no chrome,
-     because there is nothing to navigate to: every result is a link out to
-     someone else's site, and the only thing this page offers is a way to find
-     one. So the search is the page, and it is given the room to be the page.
-  */
-  /*
-     The page is one centred column, but two widths.
+     One wide container, and a narrower hero inside it.
 
-     The hero — title, subtitle, box, help — is capped at a comfortable measure
-     so the search field stays a readable length rather than stretching the width
-     of the window. The tag band below it is allowed to run wider, which is both
-     honest about what it is (a broad set of small options, not prose) and what
-     keeps it short: 83 chips across 680px wrap into fourteen rows, and across
-     860px into nine.
+     The container runs nearly the full width of the window — tags and results
+     both want the room, and a result list constrained to 680px left most of a
+     desktop screen empty while rows of text ended early. The hero stays
+     narrower so the search field keeps a sane measure and its centre lands on
+     the centre of the viewport rather than the centre of a column.
+
+     Everything is centred: the search box's midpoint, the title, and the tag
+     band all resolve to the same vertical line, so the eye lands in one place.
   */
   main {
-    max-width: 860px;
+    max-width: 1200px;
     margin: 0 auto;
-    padding: clamp(3rem, 12vh, 6.5rem) clamp(1rem, 5vw, 1.5rem) 4rem;
+    padding: clamp(2.5rem, 11vh, 5.5rem) clamp(1.25rem, 4vw, 3rem) 4rem;
   }
 
   .hero {
     text-align: center;
-    max-width: 680px;
+    max-width: 820px;
     margin: 0 auto;
   }
 
@@ -269,6 +265,22 @@
     color: var(--accent-fg);
     font-weight: 600;
   }
+
+  /* The expander. Styled as a peer of the tags rather than a control of its own,
+     so it reads as "there is more here" instead of as a button in the layout. */
+  .tagmore {
+    padding: .15rem .5rem;
+    font: inherit;
+    font-size: .74rem;
+    line-height: 1.5;
+    color: var(--fg-subtle);
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: var(--r-full);
+    cursor: pointer;
+    transition: color var(--fast), border-color var(--fast);
+  }
+  .tagmore:hover { color: var(--accent); border-color: var(--accent); }
 
   /* ---------------------------------------------------------- results */
 
@@ -421,9 +433,9 @@
   [hidden] { display: none !important; }
 
   footer {
-    max-width: 860px;
+    max-width: 1200px;
     margin: 0 auto;
-    padding: 2rem clamp(1rem, 5vw, 1.5rem) 3rem;
+    padding: 2rem clamp(1.25rem, 4vw, 3rem) 3rem;
     border-top: 1px solid var(--border-soft);
     color: var(--fg-subtle);
     font-size: .75rem;

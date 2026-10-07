@@ -191,6 +191,19 @@ async function runChecks(browser: string) {
   await send("Runtime.enable");
   await send("Page.enable");
 
+  // Pin a desktop viewport. The headless shell otherwise opens at 800x600, where
+  // every container is clamped to the same width and the layout's proportions
+  // cannot be measured at all — the checks below compare a narrow hero against a
+  // wide band, which only differ on a screen with room for both.
+  const VIEWPORT_W = 1440;
+  const VIEWPORT_H = 900;
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: VIEWPORT_W,
+    height: VIEWPORT_H,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+
   const evalJs = async (expr: string) => {
     const r = await send("Runtime.evaluate", {
       expression: expr,
@@ -241,6 +254,52 @@ async function runChecks(browser: string) {
   check("a help line is shown", /GitHub/.test(a.help || ""), (a.help || "").slice(0, 60));
   check("the search box is centred under the hero", a.searchOffset <= 2, `${a.searchOffset}px off centre`);
   check("the hero is centred on the page", a.heroOffset <= 2, `${a.heroOffset}px off centre`);
+
+  // Widths. The box is centred but narrow, the tag band and the result list are
+  // near full-bleed. All three are pinned because "make it wide" and "leave free
+  // pixels at the end" are opposite requirements that meet in one place.
+  const widths = await evalJs(`JSON.stringify((() => {
+    const w = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return JSON.stringify({
+        w: Math.round(r.width),
+        left: Math.round(r.left),
+        right: Math.round(window.innerWidth - r.right),
+      });
+    };
+    return {
+      box: w('.searchbox'),
+      tags: w('.taglist'),
+      viewport: window.innerWidth,
+    };
+  })())`);
+  const wd = JSON.parse(String(widths));
+  const box = JSON.parse(wd.box);
+  const tagw = JSON.parse(wd.tags);
+
+  check("the search box has a sane measure", box.w >= 480 && box.w <= 860, `${box.w}px`);
+  check(
+    "the search box is centred on the viewport",
+    Math.abs(box.left - box.right) <= 2,
+    `${box.left}px left / ${box.right}px right`,
+  );
+  check(
+    "the tag band is far wider than the search box",
+    tagw.w > box.w + 150,
+    `tags ${tagw.w}px vs box ${box.w}px`,
+  );
+  check(
+    "but still leaves a margin at both ends",
+    tagw.left >= 24 && tagw.right >= 24,
+    `${tagw.left}px left / ${tagw.right}px right`,
+  );
+  check(
+    "and uses most of the window",
+    tagw.w > wd.viewport * 0.75,
+    `${tagw.w}px of ${wd.viewport}px`,
+  );
   check("no results before a query", a.rows === 0, `${a.rows} rows`);
   check("and no empty placeholder either", a.resultsText === "", JSON.stringify(a.resultsText.slice(0, 40)));
 
@@ -257,38 +316,78 @@ async function runChecks(browser: string) {
 
   // ------------------------------------------------------------- tag picker
 
-  const picker = await evalJs(`JSON.stringify((() => ({
-    tags: document.querySelectorAll('#taglist .tagbtn').length,
-    labels: [...document.querySelectorAll('#taglist .tagbtn')].map(b=>b.textContent).slice(0,6),
-    heading: document.querySelectorAll('.tagpick h2, .tagpick h3').length,
-    height: Math.round(document.getElementById('taglist').getBoundingClientRect().height),
-  }))())`);
-  const p = JSON.parse(String(picker));
-  check("the tag picker is populated", p.tags >= 20, `${p.tags} tags`);
-  check(
-    "the picker is short enough to scan",
-    p.tags <= 120,
-    `${p.tags} tags`,
-  );
-  check(
-    "no technology-only tags in the picker",
-    !/^(react|javascript|typescript|css|html|python|vue)$/.test((p.labels || []).join(",")),
-    (p.labels || []).join(", "),
-  );
+  // --- the picker state -------------------------------------------------------
 
-  // An uppercase letterspaced "BROWSE BY TOPIC" heading was tried and removed:
-  // a dated label for a control nobody asked about, sitting between the reader
-  // and the search box.
-  check("the picker carries no heading", p.heading === 0, `${p.heading} headings`);
+const picker = await evalJs(`JSON.stringify((() => {
+  const list = document.getElementById('taglist');
+  const more = document.getElementById('tagmore');
+  return {
+    // Computed here rather than returned as a function: this whole object goes
+    // through JSON.stringify, which drops functions on the floor.
+    visible: [...list.querySelectorAll('.tagbtn')].map((b) => b.dataset.tag),
+    count: list.querySelectorAll('.tagbtn').length,
+    listHeight: Math.round(list.getBoundingClientRect().height),
+    expanded: more ? more.getAttribute('aria-expanded') : null,
+    moreLabel: more ? more.textContent.trim() : '',
+  };
+})())`);
+const p = JSON.parse(String(picker));
+const collapsedTags = p.visible;
 
-  // It must stay cheap in vertical terms, or it pushes the results — the thing
-  // the visitor came for — down the page. Small chips wrapping into a block is
-  // the intended shape; large chips filling half the viewport is not.
-  check("the picker stays out of the way vertically", p.height <= 260, `${p.height}px tall`);
-  check(
-    "and sits above the fold on a laptop",
-    await evalJs(`Math.round(document.getElementById('taglist').getBoundingClientRect().bottom)`) <= 760,
-  );
+// Collapsed must show only a few, and those few must be whole chips.
+check("the picker starts collapsed", p.expanded === "false", `aria-expanded=${p.expanded}`);
+check("collapsed, it shows only a few tags", collapsedTags.length > 0 && collapsedTags.length <= 14, `${collapsedTags.length}: ${collapsedTags.join(", ")}`);
+check("collapsed, it fits to roughly one row", p.listHeight <= 60, `${p.listHeight}px`);
+check("and offers to show more", /^\+\d+$/.test(p.moreLabel), JSON.stringify(p.moreLabel));
+
+// The reported bug: "+" expanded but "fewer" did not drop back to the short
+// list. Both directions are exercised, and both are asserted.
+await evalJs(`document.getElementById('tagmore')?.click()`);
+await Bun.sleep(250);
+const opened = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+  const list = document.getElementById('taglist');
+  const more = document.getElementById('tagmore');
+  return {
+    count: list.querySelectorAll('.tagbtn').length,
+    expanded: more.getAttribute('aria-expanded'),
+    label: more.textContent.trim(),
+    height: Math.round(list.getBoundingClientRect().height),
+  };
+})())`)));
+check("+ expands to every tag", opened.count > collapsedTags.length, `${opened.count} tags`);
+check("and the control flips to 'fewer'", opened.label === "fewer", JSON.stringify(opened.label));
+check("and reports itself expanded", opened.expanded === "true", `aria-expanded=${opened.expanded}`);
+check("expanded, it grows", opened.height > p.listHeight, `${opened.height}px vs ${p.listHeight}px`);
+
+await evalJs(`document.getElementById('tagmore')?.click()`);
+await Bun.sleep(250);
+const reclosed = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+  const list = document.getElementById('taglist');
+  const more = document.getElementById('tagmore');
+  return {
+    tags: [...list.querySelectorAll('.tagbtn')].map((b) => b.dataset.tag),
+    expanded: more.getAttribute('aria-expanded'),
+    label: more.textContent.trim(),
+    height: Math.round(list.getBoundingClientRect().height),
+  };
+})())`)));
+check(
+  "'fewer' drops back to the short list",
+  reclosed.tags.length === collapsedTags.length &&
+    reclosed.tags.every((t, i) => t === collapsedTags[i]),
+  `${reclosed.tags.length} tags: ${reclosed.tags.slice(0, 5).join(", ")}`,
+);
+check("and the control flips back to '+N'", /^\+\d+$/.test(reclosed.label), JSON.stringify(reclosed.label));
+check("and it returns to its collapsed height", reclosed.height === p.listHeight, `${reclosed.height}px vs ${p.listHeight}px`);
+
+// The list content itself.
+const labels = await evalJs(`[...document.querySelectorAll('#taglist .tagbtn')].map(b=>b.textContent).slice(0,6).join(',')`);
+check(
+  "no technology-only tags in the picker",
+  !/^(react|javascript|typescript|css|html|python|vue)(,|$)/.test(String(labels)),
+  String(labels),
+);
+check("the picker carries no heading", await evalJs(`document.querySelectorAll('.tagpick h2, .tagpick h3').length`) === 0);
 
   // ------------------------------------------------------------- a live search
 
@@ -312,9 +411,44 @@ async function runChecks(browser: string) {
   // One result set. This is the check that matters most: the bug being guarded
   // against was two stacked groups, a local one usually saying "0 matches"
   // above a live one that had the answer.
-  check("there is exactly one results container", await evalJs(`document.querySelectorAll('#results').length`) === 1);
+check("there is exactly one results container", await evalJs(`document.querySelectorAll('#results').length`) === 1);
 
-  const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`);
+// The result list has to be as wide as the tag band: the "Searching GitHub…"
+// placeholder and the rows share this container, so a narrow one would squeeze
+// both. Measured on the placeholder, since that is the state before any network
+// answer has arrived.
+//
+// Both widths are read in the same evaluation: the page gains a vertical
+// scrollbar once results exist, which shifts centred content by half the
+// scrollbar width. Measuring the tag band before results and the results after
+// compares two different layouts and reports a phantom offset.
+const wide = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+  const r = document.getElementById('results').getBoundingClientRect();
+  const t = document.getElementById('taglist').getBoundingClientRect();
+  return {
+    resultsW: Math.round(r.width), resultsLeft: Math.round(r.left),
+    tagsW: Math.round(t.width), tagsLeft: Math.round(t.left),
+    viewport: window.innerWidth,
+    content: document.documentElement.clientWidth,
+  };
+})())`)));
+check(
+  "the results container is near full width",
+  wide.resultsW > wide.content * 0.75,
+  `${wide.resultsW}px of ${wide.content}px`,
+);
+check(
+  "the results and the tag band are the same width",
+  Math.abs(wide.resultsW - wide.tagsW) <= 1,
+  `results ${wide.resultsW}px vs tags ${wide.tagsW}px`,
+);
+check(
+  "and share the same margins",
+  Math.abs(wide.resultsLeft - wide.tagsLeft) <= 1,
+  `results ${wide.resultsLeft}px vs tags ${wide.tagsLeft}px`,
+);
+
+const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`);
   check("liveness badges are rendered", pills > 0, `${pills} badges`);
 
   // ------------------------------------------------------------- tag toggle off
@@ -369,7 +503,7 @@ async function runChecks(browser: string) {
   }))()`);
   check("clearing the box empties the results", cleared?.rows === 0, `${cleared?.rows} rows`);
   check("and leaves no placeholder", cleared?.text === "", JSON.stringify(cleared?.text?.slice(0, 40)));
-  check("and the tag picker survives", (cleared?.tags ?? 0) >= 20, `${cleared?.tags} tags`);
+  check("and the tag picker survives", (cleared?.tags ?? 0) === collapsedTags.length, `${cleared?.tags} tags, expected ${collapsedTags.length}`);
 
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 

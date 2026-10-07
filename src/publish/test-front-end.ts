@@ -113,18 +113,30 @@ check("it loads the curated list", /BROWSE_TAGS/.test(app));
   // cannot get back to an unfiltered search without reloading.
   check("selecting a tag is reversible", /state\.tag === tag \? "" : tag/.test(app));
 
-// Selecting a tag must NOT expand the picker. It did, and the screenshot showed
-  // why that was wrong: the 83 chips reappeared and pushed the results the visitor
-  // had just asked for a full screen down the page. What tells them the selection
-  // took effect is the accent on the chip and the "topic: x" line in the summary.
-  check(
-    "the picker has no collapse machinery",
-    !/collapsed|tagmore/.test(app) && !/collapsed|tagmore/.test(html),
-    "expanding on select pushed the results down the page",
-  );
+// The picker must be a real two-state control. It shipped broken once: the
+  // collapsed state was a CSS `max-height` + `overflow: hidden` cut, which sliced
+  // a wrapped row in half and did not reliably restore the short list. Slicing
+  // the array in JS is what makes the two states exact opposites.
+check("the picker collapses by slicing the list", /slice\(0, TAGS_COLLAPSED\)/.test(app));
+// Scoped to the picker: `overflow: hidden` is legitimately used elsewhere, by
+// the two-line clamp on a result's description.
+check(
+  "the picker is not truncated with CSS",
+  !/\.taglist[^{]*\{[^}]*max-height/.test(html) && !/\.taglist[^{]*\{[^}]*overflow/.test(html),
+);
+check("the collapsed size is a named constant", /TAGS_COLLAPSED = \d+/.test(app));
+check(
+  "it offers an expander",
+  /class="tagmore"/.test(app) && /\.tagmore\s*\{/.test(html),
+);
+check("the expander toggles state both ways", /state\.tagsOpen = !state\.tagsOpen/.test(app));
+check(
+  "and reports its state to assistive tech",
+  /aria-expanded="\$\{state\.tagsOpen\}"/.test(app),
+);
 
 // An uppercase letterspaced "BROWSE BY TOPIC" heading shipped and was removed:
-// a dated label for a control the reader did not ask about.
+  // a dated label for a control the reader did not ask about.
 check("the picker carries no heading", !/<h2[^>]*>\s*Browse/i.test(html));
 
 // The copy has to be honest. "every" was a claim the API cannot support: search
