@@ -49,13 +49,13 @@ jobs:
         uses: actions/configure-pages@v5
 
       # The whole site is committed, so a plain upload of src/site is enough.
-      # A stale index would be a real problem, so verify before publishing.
-      - name: Verify the committed site is current
+      # There is no index to go stale, but the static assets still have to be
+      # internally consistent, so the front-end shape check runs here too.
+      - name: Verify the committed site
         run: |
           set -euo pipefail
           bun --version
-          bun run src/publish/test-pages.ts
-          bun run src/quality/health.ts --max-age-hours 336
+          bun run src/publish/test-idle.ts
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

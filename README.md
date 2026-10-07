@@ -1,45 +1,57 @@
 # ghindex
 
-A searchable index of [GitHub Pages](https://pages.github.com) sites. Deployed
-to GitHub Pages; the entire read side is static files.
+Live search of [GitHub Pages](https://pages.github.com) sites. You type, and
+GitHub is asked directly; every result is link-checked as it appears.
 
-Search by owner, repo, title, or topic, with a subsequence fallback for when
-you only half-remember a name. Results can be browsed by category or filtered by
-topic, and rendered as a dense list or a grid of live previews.
+The site is static files on GitHub Pages. There is no index behind it.
 
 ## How it works
 
-The GitHub Pages deployment serves only static files, so all the work happens
-in a scheduled pipeline that commits its output back into the repository.
-
 ```
-GitHub Search API ──> discover/ ──> index/ ──> classify/ ──> publish/ ──> site/
-   (which repos          (liveness     (topics to     (shard into    (static
-    have Pages?)          state         categories)    JSON)          files)
-                          machine)
-                              └──────────── quality/ ────────────┘
-                              (tests, health, perf budget, anomaly detection)
+typing ──debounce──> browser ──> edge worker ──> GitHub search API
+                         │              │
+                         │              └── cache (isolate LRU + caches.default)
+                         │
+                         └──> link-check each result ──> edge worker ──> the site's host
 ```
 
-Discovery queries the GitHub Search API for Pages-enabled repositories and
-filters `has_pages` client-side, because GitHub exposes it as a response field
-but not as a search qualifier. Search results cap at 1,000 per query, so the
-harvester works by shard **width** (many distinct queries) rather than depth.
+Everything a visitor sees is requested at the moment they search. The page holds
+no data of its own, so there is nothing to refresh on a schedule, nothing to go
+stale, and no build step between a query and its answer.
 
-Liveness is tracked per record through a state machine rather than by deletion,
-so a site that 404s once is retried on a backoff schedule before being
-tombstoned. Tombstoned records are retained but never published.
+The edge worker exists to hold the GitHub token server-side. This project is
+served from `*.github.io`, which Cloudflare cannot sit in front of, so the worker
+lives on its own hostname and is called cross-origin — see
+`worker/README.md` for the caching measurements and the limits.
+
+## Why there is no pre-built index
+
+There was one, and it was the wrong shape. A nightly harvest generated a sharded
+index, the page searched it locally, and the live GitHub search appeared
+underneath as a secondary "also on GitHub" group. Two problems with that:
+
+- **They disagreed.** The two halves were ranked differently and shown as one
+  result set, so a query routinely reported "0 matches" in the local half while
+  the live half below it had the answer.
+- **The local half was a worse sample of the same thing.** It was limited to the
+  topic shards the harvester happened to use, stale between runs, and cost
+  8 MB of generated HTML plus 2,059 per-site pages to maintain.
+
+So there is one result set now and it is live. What that costs is stated plainly
+in `worker/README.md`: the edge holds one token, so the whole site shares a
+30/minute budget and the cache absorbs roughly half of it. **That ceiling does
+not scale.** It is fine at current traffic and is a hard wall at real traffic.
+It is the honest price of not shipping a snapshot.
 
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/discover/` | Harvests Pages-enabled repos from the GitHub API. Resumable. |
-| `src/index/` | Record model, dead-link state machine, link checker, URL resolution. |
-| `src/classify/` | Derives browse categories from raw topics. |
-| `src/publish/` | Packs the corpus into sharded JSON, generates static pages. |
-| `src/quality/` | Tests, index health, performance budget, anomaly detection. |
 | `src/site/` | The static site. This is what Pages deploys. |
+| `src/site/app.js` | Search, ranking, facets, and rendering. |
+| `src/site/github-search.js` | On-demand GitHub search and liveness checks. |
+| `src/site/taxonomy.js` | Topics → browse categories. Runs in the browser. |
+| `worker/` | The edge worker: token, caching, liveness verdicts. |
 | `spike/` | The original feasibility investigation, kept for provenance. |
 
 Every path lives in `src/paths.ts`.
@@ -48,43 +60,50 @@ Every path lives in `src/paths.ts`.
 
 ```bash
 bun run serve          # dev server on :8099
-bun run harvest        # discover new repos (respects a time budget)
-bun run probe          # check liveness of records that are due
-bun run build          # corpus -> sharded JSON in src/site/data
-bun run publish        # build + generate pages + report links
-bun run test           # unit + data tests
-bun run test:all       # everything, including browser, budget, and page checks
+bun run reports        # rewrite the report-link config
+bun run test           # classifier + live search
+bun run test:all       # everything, including the browser check
 ```
 
-`bun run test:browser` starts its own dev server, so it works standalone.
+`bun run test:browser` starts its own dev server, so it works standalone. It
+needs a Chromium-family browser; set `CHROME_PATH` if it is somewhere unusual.
+
+## What the front end can and cannot do
+
+**Categories and topics** are derived in the browser, from the topics GitHub just
+returned for the current results. Their counts therefore describe the page of
+results on screen, not every site that exists.
+
+**Filtering** (category, topic, minimum stars) narrows what is already fetched.
+It never re-queries, because a facet can only remove rows from the set in hand
+and the rate-limit budget is shared.
+
+**`has_pages` is a repository setting**, and it can be weeks out of date with
+reality — a project that moved to a custom domain still reports Pages enabled
+while serving nothing. That is why each result is link-checked separately, and
+why a verdict distinguishes `blocks bots` from `dead link`: a site refusing an
+automated request is not the same as a site that is down.
+
+**The fuzzy subsequence search is gone.** It lived in the local index's scorer.
+GitHub's own ranking is what orders results now, and `github-search.js` re-sorts
+by stars so long-tail sites are not buried under whatever GitHub ranked first.
+
+**There are no per-site pages and no sitemap.** The site's entire crawlable
+surface is one search page.
 
 ## Reporting and submissions
 
-The site is static, so there is no backend to receive submissions. Rather than
-depend on a third-party form service, "Report problem" and "Claim / submit" on
-each result open a pre-filled GitHub issue. Every report lands in the repository
-as a reviewable issue, and the nightly job re-probes reported sites on its next
-run. Point reports at your own fork with `REPORT_REPO=owner/repo`.
-
-## Generated pages
-
-The app renders client-side, so a crawler would see an empty page. Each site
-with a usable title also gets a real static page under `sites/`, plus category
-landing pages, `sitemap.xml`, `robots.txt`, and a `404.html`. Text scraped from
-third-party pages is escaped, and mojibake is rejected — but non-Latin scripts
-are kept, because a Chinese or Arabic title is content, not corruption.
+The site is static, so there is no backend to receive submissions. "Report
+problem" and "Claim / submit" on each result open a pre-filled GitHub issue.
+Point reports at your own fork with `REPORT_REPO=owner/repo`.
 
 ## Guarantees enforced in CI
 
-- **Correctness** — URL resolution, classifier, and search are unit tested
-  against real harvested data.
-- **Freshness** — the index fails if older than 48h, so a silently dead cron
-  cannot go unnoticed.
-- **Integrity** — no duplicate, invalid, or dead URLs may be published.
-- **Size** — a gzip budget on the critical path, the largest shard, and
-  bytes-per-record, so an unbounded field cannot be added quietly.
-- **Reproducibility** — a rebuild must produce no diff, including the manifest
-  and generated pages.
-- **Page quality** — generated pages must have titles, descriptions, canonical
-  links, and no mojibake.
-- **Behaviour** — the UI is driven in a real headless browser.
+- **No local index** — the front-end check fails if the page ever fetches a
+  manifest, a shard, or instantiates a search worker again.
+- **Correctness** — the classifier and the live search module are unit tested.
+- **Edge behaviour** — proxy allowlist, token fallback, cache absorption, and
+  liveness verdicts are tested with a stub cache and stubbed upstream.
+- **Behaviour** — the UI is driven in a real headless browser: one result set,
+  categories derived from live topics, facets narrowing without a network call,
+  and grid previews.

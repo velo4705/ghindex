@@ -4,11 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-<meta name="description" content="A searchable index of GitHub Pages sites." />
+<meta name="description" content="Live search of GitHub Pages sites. Results come from GitHub as you type and are link-checked as they load." />
 <meta name="color-scheme" content="dark light" />
 <meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-<title>ghindex — index of GitHub Pages sites</title>
+<title>ghindex — live search of GitHub Pages sites</title>
 <!--
   Edge search worker.
 
@@ -22,6 +22,12 @@
   Clear this value and the page talks to GitHub directly instead, using each
   visitor's own IP budget. Search works either way, so a worker outage is a
   slower search rather than a broken one.
+-->
+<!--
+  There is no local index behind this page. Results are asked of GitHub at the
+  moment of the search and link-checked as they arrive, so there is nothing to
+  keep fresh and no snapshot to go stale. The cost is a shared rate-limit budget,
+  which is why the search waits for typing to pause.
 -->
 <meta name="ghindex-edge" content="https://ghindex-search.ghindex.workers.dev" />
 <style>
@@ -439,6 +445,10 @@
     padding: 1rem;
   }
 
+  /* Holds the liveness and star pills on their own line, so the title below is
+     not interrupted by inline badges. */
+  .card-head { display: flex; gap: .25rem; align-items: center; min-height: 1em; }
+
   .card .info { padding: .6rem .7rem .7rem; display: flex; flex-direction: column; gap: .2rem; min-height: 0; }
   .card .title {
     font-size: .85rem;
@@ -480,21 +490,12 @@
   }
   .tokenhelp { margin: .35rem 0 0; color: var(--fg-subtle); font-size: .72rem; max-width: 560px; }
 
-  /* ---------------------------------------------------------- wide results */
+  /* ---------------------------------------------------------- result meta */
 
-  .wide { margin: 1.2rem 0 .5rem; }
-  .wide h2 {
-    margin: 0 0 .2rem;
-    font-size: .8rem;
-    font-weight: 600;
-    letter-spacing: .04em;
-    text-transform: uppercase;
-    color: var(--fg-subtle);
-  }
-  .wide p.note { margin: 0 0 .6rem; color: var(--fg-muted); font-size: .8rem; }
-  .wide .row { border-left: 3px solid var(--accent); }
-  /* The "show more" control, rendered inside the on-demand section. */
-  .wide #wide-more { margin-top: .8rem; }
+  /* The summary line under the search box, and the "show more" control that
+     lives with it. Both describe the one live result set. */
+  #results p.note { margin: .6rem 0 0; color: var(--fg-muted); font-size: .8rem; }
+  #wide-more { margin-top: .8rem; }
   /* ------------------------------------------------------------- idle state */
   /* Shown when nothing has been typed. This is the entire first impression, so
      it states what the search covers rather than trying to be a browsable
@@ -558,8 +559,9 @@
   .pill.live-unknown { opacity: .7; }
   /* Dim a confirmed dead row rather than removing it: the reader may still want
      to see that the repo claims Pages is on while nothing is served. */
-  .wide .row.is-gone { opacity: .55; }
-  .wide .row.is-gone .url { text-decoration: line-through; text-decoration-thickness: 1px; }
+  #results .row.is-gone { opacity: .55; }
+  #results .row.is-gone .url { text-decoration: line-through; text-decoration-thickness: 1px; }
+  #results .card.is-gone { opacity: .55; }
   .pill {
     display: inline-block;
     font-size: .62rem;
@@ -592,14 +594,7 @@
     background: var(--bg-subtle);
   }
 
-  .skeleton {
-    height: 84px;
-    border-radius: var(--r-lg);
-    background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 37%, var(--surface) 63%);
-    background-size: 400% 100%;
-    animation: shimmer 1.3s ease-in-out infinite;
-  }
-  @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+  
 
   footer {
     border-top: 1px solid var(--border);
@@ -624,7 +619,7 @@
     <div class="brandrow">
       <span class="logo" aria-hidden="true">gh</span>
       <h1>ghindex</h1>
-      <span class="sub" id="count">index of GitHub Pages sites</span>
+      <span class="sub" id="count">live search of GitHub Pages sites</span>
     </div>
 
     <form role="search" id="f" class="controls">
@@ -633,9 +628,9 @@
              stroke-linecap="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
         </svg>
-        <label class="sr" for="q">Search owner, repo, title, or tag</label>
+        <label class="sr" for="q">Search GitHub for Pages sites</label>
         <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
-               placeholder="Search owner, repo, title or tag…" />
+               placeholder="Search GitHub Pages sites…" />
       </div>
 
       <button type="button" id="wide" class="btn"
@@ -679,7 +674,10 @@
       </p>
     </div>
 
-    <div class="filterbar">
+    <!-- Category and topic counts describe the results currently on screen,
+       derived from the topics GitHub just returned. They are empty until a
+       search runs, because there is no index to draw a global count from. -->
+  <div class="filterbar" id="filterbar" hidden>
       <div class="chips" id="cats" role="group" aria-label="Browse by category"></div>
       <div class="chips" id="facets" role="group" aria-label="Filter by topic"></div>
     </div>
@@ -690,14 +688,13 @@
   <!-- Shown when JS is unavailable or the worker fails; hidden once the app boots. -->
   <noscript>
     <p class="meta">
-      This search index needs JavaScript. Without it you can still browse the raw
-      shards directly, for example
-      <a href="./data/manifest.json">manifest.json</a> and
-      <a href="./data/a.json">a.json</a> … <a href="./data/z.json">z.json</a>
-      (sharded by the first letter of the owner).
+      This search needs JavaScript: results are requested from GitHub as you
+      type and link-checked as they arrive, which a static page cannot do. With
+      JavaScript off you can still search GitHub directly:
+      <a href="https://github.com/search?q=topic%3Agithub-pages&amp;type=repositories">github.com/search</a>
     </p>
   </noscript>
-  <div class="meta" id="meta" role="status" aria-live="polite">Loading index…</div>
+  <div class="meta" id="meta" role="status" aria-live="polite"></div>
 
   <!--
     The prompt shown when nothing has been typed. There is no front page: this
@@ -708,8 +705,9 @@
   <section id="idle" aria-label="Getting started">
     <h2>Type what you want to find</h2>
     <p class="lede">
-      Searches this index and GitHub at once, by owner, repository, title,
-      topic or description.
+      Searches GitHub for Pages-enabled repositories as you type, by owner,
+      repository, title, topic or description, and checks that each result is
+      actually serving right now.
     </p>
     <div class="examples" id="examples" role="group" aria-label="Example searches">
       <button type="button" class="ex" data-example="chess">chess</button>
@@ -728,7 +726,7 @@
   <div class="wrap">
     <p>
       ghindex is an independent project and is not affiliated with GitHub.
-      Site metadata is collected from public Pages deployments and refreshed nightly.
+      Results come straight from GitHub and are link-checked as they load.
     </p>
   </div>
 </footer>

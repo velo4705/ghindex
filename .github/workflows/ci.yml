@@ -1,9 +1,8 @@
 name: ci
 
-# Fast feedback on pull requests. The nightly refresh-index workflow is the
-# thing that actually updates the data; this one exists so a bad classifier
-# change or a bloated payload is caught BEFORE it reaches the default branch,
-# not a day later.
+# Fast feedback on pull requests. Everything here is a pure check against the
+# committed source: there is no data to validate and nothing to regenerate, so
+# CI must not spend API rate limit on a PR.
 on:
   pull_request:
   push:
@@ -24,6 +23,8 @@ jobs:
         with:
           node-version: 20
 
+      # The site is plain JavaScript and the checks are TypeScript run by bun;
+      # no npm install needed.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -31,16 +32,10 @@ jobs:
       # No GITHUB_TOKEN here: these are pure checks against committed data, so
       # CI must not spend API rate limit on a PR.
 
-      - name: URL resolution
-        run: bun run src/index/test-urls.ts
-
       - name: Category classifier
-        run: bun run src/classify/test.ts
+        run: bun run src/site/taxonomy-test.ts
 
-      - name: Search correctness
-        run: bun run src/publish/test-search.ts
-
-      - name: On-demand GitHub search
+      - name: Live GitHub search
         run: bun run src/publish/test-wide-search.ts
 
       # The edge worker had no CI step at all, so its proxy allowlist, token
@@ -48,30 +43,10 @@ jobs:
       - name: Edge worker
         run: bun run worker/test-worker.ts
 
-      # Guards the load policy the search-only page depends on: nothing is
-      # fetched until a query needs it, and every example query in the prompt
-      # returns something.
-      - name: Front end prompt and lazy loading
+      # Guards the live-only shape of the page: no index is fetched, and the
+      # example queries it offers are still worth offering.
+      - name: Front end has no local index
         run: bun run src/publish/test-idle.ts
-
-      - name: Star quota
-        run: bun run src/publish/test-star-quota.ts
-
-      - name: Generate static pages, then verify them
-        run: |
-          bun run build
-          bun run pages
-          bun run reports
-          bun run test:pages
-
-      - name: Index health
-        run: bun run src/quality/health.ts --max-age-hours 168
-
-      - name: Performance budget
-        run: bun run src/quality/perf-budget.ts
-
-      - name: Anomaly detector self-test
-        run: bun run src/quality/test-anomaly.ts
 
       - name: CI compatibility self-test
         run: bun run src/quality/test-ci-compat.ts
@@ -90,25 +65,11 @@ jobs:
 
           bun run serve.ts &
           SERVER=$!
-          # Poll the server rather than sleeping a fixed amount.
+          # Poll the server rather than sleeping a fixed amount. There is no
+          # manifest to wait for any more, so poll the page itself.
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8099/data/manifest.json > /dev/null; then break; fi
+            if curl -sf http://localhost:8099/index.html > /dev/null; then break; fi
             sleep 1
           done
           bun run src/quality/verify-browser.ts || { kill $SERVER 2>/dev/null; exit 1; }
           kill $SERVER 2>/dev/null || true
-
-      - name: Verify the build is reproducible (idempotent)
-        run: |
-          bun run src/publish/test-idempotent.ts
-          bun run build
-          # Generated pages must also be committed and current, otherwise a
-          # merged change can ship a stale sitemap that references dead pages.
-          bun run pages
-          bun run reports
-          if [ -n "$(git status --porcelain src/site)" ]; then
-            echo "::error::src/site is stale — run 'bun run publish' and commit the result"
-            git status --porcelain src/site | head -20
-            exit 1
-          fi
-          echo "src/site matches the corpus"

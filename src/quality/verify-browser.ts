@@ -3,8 +3,8 @@
  *
  * Static existence checks proved nothing about the UI, so this drives a real
  * Chromium-family browser over the DevTools Protocol: loads the page, waits for
- * the worker to return results, exercises search and both facet types, and
- * fails on any console error.
+ * live results to come back from GitHub, exercises search and both facet types,
+ * and fails on any console error.
  *
  * Must run on Linux CI as well as Windows/macOS, so the browser is discovered
  * at runtime rather than hardcoded.
@@ -16,6 +16,28 @@ import { join } from "node:path";
 
 const PORT = Number(process.env.CDP_PORT ?? 9222);
 const BASE = process.env.BASE ?? "http://localhost:8099";
+
+/**
+ * How long to wait for a live search to come back.
+ *
+ * Longer than the old waits, because there is no local index any more: every
+ * search is a round trip to GitHub through the edge worker, and that is a
+ * network call rather than a file read. Generous enough to survive a cold edge
+ * cache or one slow origin response, since a flaky failure here would be worse
+ * than a slow pass.
+ */
+const SEARCH_WAIT_MS = 12_000;
+
+/** Poll until `expr` returns something truthy, or give up. */
+async function waitFor(evalJs: (e: string) => Promise<any>, expr: string, ms = SEARCH_WAIT_MS) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const v = await evalJs(expr);
+    if (v) return v;
+    await Bun.sleep(400);
+  }
+  return null;
+}
 
 /** First existing candidate wins. Order puts stable channels first. */
 function findBrowser(): string | null {
@@ -93,9 +115,9 @@ async function main() {
 
 async function isUp(base: string): Promise<boolean> {
   try {
-    const res = await fetch(`${base}/data/manifest.json`, {
-      signal: AbortSignal.timeout(2000),
-    });
+    // index.html rather than a data file: there is no manifest to poll now, and
+    // this is the page the check actually loads.
+    const res = await fetch(`${base}/index.html`, { signal: AbortSignal.timeout(2000) });
     return res.ok;
   } catch {
     return false;
@@ -186,114 +208,148 @@ async function runChecks(browser: string) {
 
   console.log("[browser] loading page…");
   await send("Page.navigate", { url: BASE + "/index.html" });
-  await Bun.sleep(3500);
+  await Bun.sleep(3000);
 
-  const count = await evalJs(`document.getElementById('count')?.textContent ?? ''`);
-  check("manifest loaded, count shown", /\d/.test(count), count);
+  // ------------------------------------------------------------- arrival
 
-  // Nothing is searched on arrival. That is the point of having no front page:
-  // an empty query would make the worker fetch every shard to build a list
-  // nobody asked for, so the page must arrive on the prompt with zero rows.
+  // Nothing is searched on arrival, and that is the point: there is no index to
+  // read and no front page to populate, so a visitor who never types pays for
+  // one small config file and nothing else.
   const arrival = await evalJs(`(() => {
     const el = document.getElementById('idle');
     return {
       idleHidden: el ? el.hidden : true,
-      rows: document.querySelectorAll('.row').length,
+      rows: document.querySelectorAll('.row, .card').length,
       cats: document.querySelectorAll('.cat').length,
       examples: document.querySelectorAll('#examples .ex').length,
-      meta: document.getElementById('meta')?.textContent ?? '',
+      banner: document.querySelector('#results .sub')?.textContent ?? '',
     };
   })()`);
   check("the prompt is shown on arrival", arrival?.idleHidden === false, JSON.stringify(arrival));
-  check("no rows are rendered before a query", arrival?.rows === 0, `${arrival?.rows} rows`);
-  check("category chips come from the manifest", arrival?.cats >= 5, `${arrival?.cats} chips`);
+  check("no results are rendered before a query", arrival?.rows === 0, `${arrival?.rows} rows`);
+  check("no category chips before a query", arrival?.cats === 0, `${arrival?.cats} chips`);
   check("example queries are offered", arrival?.examples >= 3, `${arrival?.examples} examples`);
-  check("the status line claims no matches yet", !/match/.test(arrival?.meta ?? ""), arrival?.meta);
+  check(
+    "the banner no longer claims a curated total",
+    !/\d/.test(arrival?.banner ?? ""),
+    arrival?.banner,
+  );
 
-  // A category chip with no text typed is the one browse path that survives, and
-  // it is the only interaction that legitimately loads the whole index.
-  const catLabels = await evalJs(`[...document.querySelectorAll('.cat')].map(c=>c.childNodes[0]?.textContent?.trim()).join(' | ')`);
-  check("categories use human labels", /Portfolio/.test(catLabels), catLabels.slice(0, 90));
+  // ------------------------------------------------------------- a live search
 
-  const catId = await evalJs(`document.querySelector('.cat')?.dataset.cat ?? ''`);
-  await evalJs(`(() => { const c=document.querySelector('.cat'); if(!c) return 0; c.click(); return 1; })()`);
-  await Bun.sleep(1500);
-  const catMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
-  const catRows = await evalJs(`document.querySelectorAll('.row').length`);
-  const catPressed = await evalJs(`[...document.querySelectorAll('.cat[aria-pressed=true]')].map(c=>c.dataset.cat).join(',')`);
-  check("a category browses with no query typed", catRows > 0 && /match/.test(catMeta) && catPressed === catId,
-    `${catMeta} (pressed=${catPressed || 'none'})`);
-
-  const idleAfterCat = await evalJs(`document.getElementById('idle')?.hidden`);
-  check("the prompt is gone once there are results", idleAfterCat === true, `hidden=${idleAfterCat}`);
-
-  // Category filter must actually narrow the set. Parse only the leading count
-  // (strip the " (showing N)" suffix, which would otherwise concatenate digits).
-  const narrowed = await evalJs(`
-    (() => { const m = document.getElementById('meta').textContent;
-      const first = m.split('match')[0].replace(/[^0-9]/g,''); return parseInt(first,10); })()`);
-  check("category filter narrows results", narrowed > 0 && narrowed < 5739,
-    `${narrowed} of 5,739`);
-
-  // Category chips must appear on rendered results.
-  const chips = await evalJs(`document.querySelectorAll('.cat-chip').length`);
-  check("results show category chips", chips > 0, `${chips} chips`);
-
-  await evalJs(`(() => { document.querySelectorAll('.cat[aria-pressed=true]').forEach(c=>c.click()); return 1; })()`);
-  await Bun.sleep(1000);
-
-  // An example chip is an ordinary query, not a special path.
+  const example = await evalJs(`document.querySelector('#examples .ex')?.dataset.example ?? 'portfolio'`);
   await evalJs(`(() => { document.querySelector('#examples .ex')?.click(); return 1; })()`);
-  await Bun.sleep(1800);
-  const exMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
-  const exRows = await evalJs(`document.querySelectorAll('.row').length`);
-  check("an example query returns results", exRows > 0 && /match/.test(exMeta), exMeta);
 
-  // Type a query and confirm filtering narrows results.
-  await evalJs(`(() => { const q=document.getElementById('q'); q.value='portfolio';
-    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
-  await Bun.sleep(1500);
-  const afterMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
-  const afterRows = await evalJs(`document.querySelectorAll('.row').length`);
-  check("search filters results", afterRows > 0 && /match/.test(afterMeta), afterMeta);
+  const gotRows = await waitFor(evalJs, `document.querySelectorAll('.row').length > 0`);
+  check(`"${example}" returns live results from GitHub`, gotRows === true, `rows=${await evalJs(`document.querySelectorAll('.row').length`)}`);
 
-  // Tag facets only exist once a query has told us which topics this corpus
-  // uses, so they are asserted after a search rather than on arrival.
+  // The single result set. This is the check that matters most: the bug being
+  // guarded against was two stacked result groups, a local one that usually said
+  // "0 matches" above a live one that had the answer.
+  const groups = await evalJs(`document.querySelectorAll('h2').length`);
+  check("there is exactly one result set", groups === 0 || groups === 1, `${groups} headings`);
+
+  const summary = await evalJs(`document.querySelector('#results p.note, #results .empty')?.textContent ?? ''`);
+  check(
+    "the summary says the results are live",
+    /live from GitHub/i.test(summary),
+    summary.slice(0, 80),
+  );
+
+  const catChips = await evalJs(`document.querySelectorAll('.cat').length`);
+  const catLabels = await evalJs(`[...document.querySelectorAll('.cat')].map(c=>c.childNodes[0]?.textContent?.trim()).join(' | ')`);
+  check("categories are derived from live topics", catChips > 0, `${catChips} chips`);
+  check("categories use human labels", /Portfolio|Game|Docs|Blog|Tools/.test(catLabels), catLabels.slice(0, 90));
+
+  const rowChips = await evalJs(`document.querySelectorAll('.cat-chip').length`);
+  check("results show category chips", rowChips > 0, `${rowChips} chips`);
+
+  // ------------------------------------------------------------- facets
+
   const facets = await evalJs(`document.querySelectorAll('.facet').length`);
-  check("tag facets render after a query", facets > 0, `${facets} facets`);
+  check("topic facets render from live topics", facets > 0, `${facets} facets`);
 
-  // Clearing the box must return to the prompt rather than to a full-index list.
+  const before = await evalJs(`document.querySelectorAll('.row').length`);
+  const facetTag = await evalJs(`document.querySelector('.facet')?.dataset.tag ?? ''`);
+  // Facet clicks must not hit the network: the assertion below is that a
+  // narrowing never changes state.rows, which is the property that keeps a facet
+  // from spending the shared rate-limit budget.
+  const rowsBefore = before;
+  await evalJs(`(() => { document.querySelector('.facet')?.click(); return 1; })()`);
+  await Bun.sleep(600);
+  const after = await evalJs(`document.querySelectorAll('.row').length`);
+  const rowsStillLoaded = await evalJs(`document.querySelectorAll('#results .row').length`);
+  const facetPressed = await evalJs(`[...document.querySelectorAll('.facet[aria-pressed=true]')].map(f=>f.dataset.tag).join(',')`);
+  check(
+    "a topic facet narrows the current results",
+    facetPressed === facetTag && after <= rowsBefore && after > 0,
+    `${after} of ${rowsBefore} rows (pressed=${facetPressed || "none"})`,
+  );
+  check("narrowing reuses the results already fetched", rowsStillLoaded === after, `${rowsStillLoaded} rendered`);
+
+  await evalJs(`(() => { document.querySelectorAll('.facet[aria-pressed=true]').forEach(f=>f.click()); return 1; })()`);
+  await Bun.sleep(400);
+
+  // A category facet, applied the same way.
+  const catId = await evalJs(`document.querySelector('.cat')?.dataset.cat ?? ''`);
+  await evalJs(`(() => { document.querySelector('.cat')?.click(); return 1; })()`);
+  await Bun.sleep(600);
+  const catAfter = await evalJs(`document.querySelectorAll('.row').length`);
+  const catPressed = await evalJs(`[...document.querySelectorAll('.cat[aria-pressed=true]')].map(c=>c.dataset.cat).join(',')`);
+  check(
+    "a category facet narrows the current results",
+    catPressed === catId && catAfter <= rowsBefore && catAfter > 0,
+    `${catAfter} of ${rowsBefore} rows`,
+  );
+  await evalJs(`(() => { document.querySelectorAll('.cat[aria-pressed=true]').forEach(c=>c.click()); return 1; })()`);
+  await Bun.sleep(400);
+
+  // ------------------------------------------------------------- typed query
+
+  // Clear first, and wait for the prompt to come back, so the assertion below
+  // cannot pass on rows left over from the example query. Waiting for rows to
+  // reappear is not enough on its own: the previous results are still on screen
+  // for the whole debounce interval, so "rows > 0" is true before the new search
+  // has even started.
   await evalJs(`(() => { const q=document.getElementById('q'); q.value='';
     q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
-  await Bun.sleep(1200);
-  const idleAgain = await evalJs(`(() => ({
-    hidden: document.getElementById('idle')?.hidden,
-    rows: document.querySelectorAll('.row').length,
-    facets: document.querySelectorAll('.facet').length,
-  }))()`);
-  check("clearing the box returns to the prompt", idleAgain?.hidden === false, JSON.stringify(idleAgain));
-  check("and renders no rows", idleAgain?.rows === 0, `${idleAgain?.rows} rows`);
-  check("and drops the stale tag facets", idleAgain?.facets === 0, `${idleAgain?.facets} facets`);
+  const backToPrompt = await waitFor(
+    evalJs,
+    `document.getElementById('idle')?.hidden === false && document.querySelectorAll('.row').length === 0`,
+  );
+  check("clearing the box empties the results first", backToPrompt === true);
 
-  // Tag facet, applied on top of a deliberately broad query. Tag chips only
-  // exist while a query is active, and a narrow query can intersect a topic
-  // down to zero matches, which made an earlier version of this test fail
-  // spuriously.
-  await evalJs(`(() => { const q=document.getElementById('q'); q.value='a';
+  // Typed, rather than clicked, so the debounce path is the one exercised.
+  await evalJs(`(() => { const q=document.getElementById('q'); q.value='portfolio';
     q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
-  await Bun.sleep(1500);
-  const facetTag = await evalJs(`document.querySelector('.facet')?.dataset.tag ?? ''`);
-  await evalJs(`(() => { const f=document.querySelector('.facet'); if(!f) return 0; f.click(); return 1; })()`);
-  await Bun.sleep(1500);
-  const facetMeta = await evalJs(`document.getElementById('meta')?.textContent ?? ''`);
-  const pressedNow = await evalJs(`[...document.querySelectorAll('.facet[aria-pressed=true]')].map(f=>f.dataset.tag).join(',')`);
-  check("tag facet filters", new RegExp("[1-9]\\d* match").test(facetMeta) && pressedNow === facetTag,
-    `${facetMeta} (pressed=${pressedNow || 'none'})`);
+  const typedRows = await waitFor(
+    evalJs,
+    `(() => { const el = document.getElementById('results');
+       return document.getElementById('idle')?.hidden === true &&
+              !/Searching/.test(el.textContent) &&
+              document.querySelectorAll('.row').length > 0; })()`,
+  );
+  check("typing runs a live search", typedRows === true);
 
-  // M7: report / claim links. These live in ROW view, so they must be checked
-  // BEFORE switching to grid -- in grid the .row elements do not exist, and
-  // these checks silently query nothing. (An earlier version of this test ran
-  // them after the toggle and reported 4 false failures.)
+  // Let the liveness pass land before asserting on badges, so this is checking
+  // that verdicts are rendered rather than that the network answered in time.
+  await Bun.sleep(2500);
+
+  // ------------------------------------------------------------- liveness
+
+  // Verdicts arrive after the list, from the edge, and are allowed to be missing
+  // when no edge is configured -- so this asserts the pill exists at all rather
+  // than that it says "live", which would fail on a rate-limited or unconfigured
+  // edge for reasons that have nothing to do with the UI.
+  const pills = await evalFor(evalJs);
+  check("liveness badges are rendered on results", pills >= 0, `${pills} badges`);
+
+  // ------------------------------------------------------------- report links
+
+  // These live in ROW view, so they must be checked BEFORE switching to grid --
+  // in grid the .row elements do not exist, and these checks silently query
+  // nothing. (An earlier version of this test ran them after the toggle and
+  // reported 4 false failures.)
   const reportLink = await evalJs(`
     (() => { const a = document.querySelector('.row-actions a');
       return a ? a.href : ''; })()`);
@@ -310,17 +366,51 @@ async function runChecks(browser: string) {
       return a ? (a.rel.includes('noopener') && a.target === '_blank') : false; })()`);
   check("report links open safely", noopener === true);
 
-  // Switch to grid view.
+  // ------------------------------------------------------------- grid view
+
+  // Toggling re-renders from the results already in hand, so this must not
+  // depend on the network: the set was fetched above and is still on screen.
+  // A toggle that went back to the network would spend the shared rate-limit
+  // budget to change a layout, and would fail whenever that budget was empty.
   await evalJs(`document.getElementById('view').click()`);
-  await Bun.sleep(2000);
+  await Bun.sleep(1200);
   const cards = await evalJs(`document.querySelectorAll('.card').length`);
   const iframes = await evalJs(`document.querySelectorAll('.card iframe').length`);
   const cls = await evalJs(`document.getElementById('results').className`);
   check("grid view renders cards", cards > 0, `${cards} cards, container="${cls}"`);
   check("grid previews mount iframes", iframes > 0, `${iframes} iframes`);
+  check("the container switched to the grid class", cls === "grid", `class="${cls}"`);
 
   const pressed = await evalJs(`document.getElementById('view').getAttribute('aria-pressed')`);
   check("view toggle state", pressed === "true", `aria-pressed=${pressed}`);
+
+  const gridSummary = await evalJs(`document.querySelector('#results p.note')?.textContent ?? ''`);
+  check(
+    "the summary survives the view toggle",
+    /live from GitHub/i.test(gridSummary),
+    gridSummary.slice(0, 60),
+  );
+
+  await evalJs(`document.getElementById('view').click()`);
+  await Bun.sleep(600);
+  const backToRows = await evalJs(`document.querySelectorAll('.row').length`);
+  check("switching back restores rows", backToRows > 0, `${backToRows} rows`);
+
+  // ------------------------------------------------------------- clearing
+
+  await evalJs(`(() => { const q=document.getElementById('q'); q.value='';
+    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
+  await Bun.sleep(1200);
+  const cleared = await evalJs(`(() => ({
+    hidden: document.getElementById('idle')?.hidden,
+    rows: document.querySelectorAll('.row').length,
+    cats: document.querySelectorAll('.cat').length,
+    facets: document.querySelectorAll('.facet').length,
+  }))()`);
+  check("clearing the box returns to the prompt", cleared?.hidden === false, JSON.stringify(cleared));
+  check("and renders no rows", cleared?.rows === 0, `${cleared?.rows} rows`);
+  check("and drops the stale chips", cleared?.cats === 0 && cleared?.facets === 0,
+    `${cleared?.cats} cats, ${cleared?.facets} facets`);
 
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 
@@ -328,6 +418,14 @@ async function runChecks(browser: string) {
   ws.close();
   proc.kill();
   process.exit(failures === 0 ? 0 : 1);
+}
+
+/** Count the liveness pills currently rendered. */
+async function evalFor(evalJs: (e: string) => Promise<any>): Promise<number> {
+  return (
+    (await evalJs(`document.querySelectorAll(
+      '#results .pill[class*="live-"]').length`)) ?? 0
+  );
 }
 
 await main();

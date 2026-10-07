@@ -1,26 +1,33 @@
 /**
- * ghindex read-side (M3).
+ * ghindex read side.
  *
- * There is no front page. The page is a search box, and results appear under it
- * once you type. Two views over the same result set:
- *   - row  : dense list, keyboard-friendly, the default
- *   - grid : live iframe previews, lazily mounted, capped and virtualized
+ * The page is a search box and results appear under it once you type. There is
+ * no local index: every result is asked of GitHub through the edge worker at the
+ * moment of the search, so what you see is what GitHub reports right now rather
+ * than what a nightly harvest happened to catch.
  *
- * Nothing is fetched until it is needed. Boot loads the manifest and draws the
- * category chips from it, so arriving costs one small request. Shards are read
- * by the search worker on the first query and not before — an empty query reads
- * none of them. A query does read all of them, because routing a query to the
- * one shard that could match was tried and quietly cost about 90% of the
- * results; see candidateShards in the worker.
+ * Why there is no pre-built index
+ * -------------------------------
+ * An earlier version pre-generated a sharded index and searched it locally, with
+ * the live GitHub path shown underneath as a secondary "also on GitHub" group.
+ * That was the wrong shape. The two result sets were ranked differently and shown
+ * as one, so a query routinely reported "0 matches" in the local half while the
+ * live half below it had the answer. The local half was also a smaller, staler,
+ * topic-shard-limited sample of the same thing the live half could see for free,
+ * and it cost 8 MB of generated HTML to maintain.
  *
- * Grid previews are viable because only ~1.5% of live Pages sites send a
- * framing-blocking header (measured in M0/M1). Cross-origin iframes still fire
- * no reliable load event, so a card that cannot render shows a link fallback
- * rather than an empty frame.
+ * So there is one result set now, and it is live. What that costs is stated in
+ * worker/README.md: the edge holds one token, so the whole site shares a 30/min
+ * budget and the cache absorbs roughly half of it. That ceiling is real and it
+ * does not scale, which is the honest price of not shipping a snapshot.
+ *
+ * Ranking, facets and filtering all run here on whatever came back, because a
+ * live result set is a page of results rather than a corpus: categories come
+ * from classify() over the topics in hand, and their counts describe this result
+ * set rather than every site that exists.
  */
 
 const $ = (id) => document.getElementById(id);
-const DATA = "./data/";
 const PAGE = 60; // rows rendered per page; sentinel appends more
 
 /**
@@ -41,13 +48,14 @@ function reportBrokenUrl(siteUrl) {
   return issueUrl(
     `Dead or incorrect: ${siteUrl}`,
     [
-      "## Report: problem with an indexed site",
+      "## Report: problem with a listed site",
       "",
       `- **Site:** ${siteUrl}`,
       "- **Observed:** (dead / 404 / wrong content / miscategorised)",
       "",
-      "The nightly job re-probes reported sites on the next run. If the site is",
-      "dead it moves through the backoff schedule and is eventually unpublished.",
+      "Links are checked as you load them. If the site is dead the check says so",
+      "inline; this report is for a link that resolves to the wrong thing, or a",
+      "site that is alive but wrongly described.",
     ].join("\n"),
     "report",
   );
@@ -72,67 +80,61 @@ function submitSiteUrl(siteUrl, owner) {
   );
 }
 
+// ---------------------------------------------------------------- state
+
 const state = {
-  manifest: null,
   rows: [],
   total: 0,
-  tags: [],
+  pages: 0,
+  truncated: false,
+  hasMore: false,
+  partial: null,
+  error: null,
+  loading: false,
+  inflight: null,
+  lastQuery: "",
+  q: "",
+  /** Liveness verdicts, keyed by site URL. */
+  live: new Map(),
+  verifyToken: 0,
   cats: [],
   catLabels: {},
-  activeTags: new Set(),
   activeCats: new Set(),
+  activeTags: new Set(),
   minStars: 0,
   // Row is the default. Previews are heavy (each card is a live iframe of a
   // third-party page) and cannot be verified as loaded, so they are opt-in.
   view: "row", // 'row' | 'grid'
   rendered: 0,
-  reqId: 0,
+  shown: [],
 };
 
-// ---------------------------------------------------------------- worker
-
-const worker = new Worker("./search-worker.js", { type: "module" });
+/** Pages loaded per "show more" click. One page = 100 repos = ~35 Pages sites. */
+const WIDE_PAGE_STEP = 1;
 
 /**
- * If the worker cannot start (blocked, 404, syntax error), degrade to a
- * readable error instead of a page stuck on "Searching…" forever. This exact
- * failure mode shipped once already.
+ * Debounce before asking GitHub.
+ *
+ * Every keystroke that reaches the network spends from a budget shared by all
+ * visitors, so this waits for typing to pause rather than searching as you go.
+ * A pause is a deliberate query. Submitting the form bypasses the wait.
  */
-worker.onerror = (e) => {
-  const msg = $("meta");
-  msg.textContent =
-    `Search failed to start (${e.message || "worker error"}). ` +
-    `The index data is still browsable at ./data/manifest.json.`;
-  msg.style.color = "#f85149";
-  $("q").disabled = true;
-};
+const DEBOUNCE_MS = 700;
 
-worker.onmessage = (e) => {
-  const m = e.data;
-  if (m.type === "ready") {
-    $("count").innerHTML = `<b>${m.total.toLocaleString()}</b> live sites indexed`;
-    return;
-  }
-  if (m.type === "error") {
-    $("meta").textContent = `Search error: ${m.message}`;
-    return;
-  }
-  if (m.type !== "results") return;
-  // Ignore stale responses: a newer query has already been issued.
-  if (m.id !== state.reqId) return;
+/**
+ * How many results to liveness-check, and in what size batches.
+ *
+ * Each check is a Worker invocation that makes a real request to someone else's
+ * site, so this is capped rather than exhaustive: it covers the top results on
+ * screen, which are the ones anyone is likely to click.
+ */
+const LIVE_CHECK_LIMIT = 24;
 
-  state.rows = m.rows;
-  state.total = m.total;
-  state.tags = m.tags;
-  state.cats = m.cats;
-  state.rendered = 0;
-  $("meta").textContent =
-    `${m.total.toLocaleString()} match${m.total === 1 ? "" : "es"}` +
-    `${m.total > m.rows.length ? ` (showing ${m.rows.length})` : ""} · ${m.elapsedMs}ms`;
-  showIdle(false);
-  renderFacets();
-  renderPage();
-};
+/** URLs per batch. The worker allows twelve per call and six distinct hosts. */
+const LIVE_CHECK_CHUNK = 6;
+
+/** Reads a user-supplied token from the tab, if any. Never persisted. */
+const userToken = () => $("token")?.value.trim() || "";
 
 // ---------------------------------------------------------------- helpers
 
@@ -141,9 +143,9 @@ const esc = (s) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 /**
- * Defense in depth: never emit an href/src we did not construct. Record URLs
- * come from a harvested corpus, so treat every one of them as untrusted input
- * even though the harvester validates them today.
+ * Defense in depth: never emit an href/src we did not construct. Live results
+ * carry a `homepage` string straight from GitHub, so treat every one of them as
+ * untrusted input even though the URL is derived from validated fields.
  */
 function safeUrl(u) {
   try {
@@ -157,93 +159,76 @@ function safeUrl(u) {
   }
 }
 
-/** Reads a user-supplied token from the tab, if any. Never persisted. */
-const userToken = () => $("token")?.value.trim() || "";
+/**
+ * Whether a row passes the active facets.
+ *
+ * These filter what GitHub just returned, they do not re-query: a category is
+ * derived client-side from topics, so narrowing by one can only ever remove
+ * rows from the page in hand, never surface a site from outside it.
+ */
+function passesFilters(r) {
+  const cats = r._cats ?? [];
+  if (state.activeCats.size) {
+    let ok = false;
+    for (const c of state.activeCats) {
+      if (cats.includes(c)) {
+        ok = true;
+        break;
+      }
+    }
+    if (!ok) return false;
+  }
+  if (state.activeTags.size) {
+    const have = new Set((r.topics ?? []).map((t) => t.toLowerCase()));
+    let ok = false;
+    for (const t of state.activeTags) {
+      if (have.has(t)) {
+        ok = true;
+        break;
+      }
+    }
+    if (!ok) return false;
+  }
+  if (state.minStars > 0 && (Number(r.stars) || 0) < state.minStars) return false;
+  return true;
+}
+
+function hasFilters() {
+  return state.activeCats.size > 0 || state.activeTags.size > 0 || state.minStars > 0;
+}
+
+// ---------------------------------------------------------------- search
 
 /**
- * On-demand search against GitHub, for sites outside the local index.
+ * Run a query against GitHub through the edge worker.
  *
- * The local index has hard edges: it holds only what our topic shards happened
- * to find. Measured against topics we never harvested, 96% of the Pages-enabled
- * owners we turned up were absent from it. GitHub can find them, so this widens
- * the net on demand rather than waiting for a harvest that can never enumerate
- * everything, because the API caps at 1,000 results per query.
+ * Pages accumulate: `searchGitHub` walks page 1..N and returns the union, so
+ * "show more" extends the set rather than replacing it.
  */
-/**
- * State for the on-demand GitHub search.
- *
- * `pages` is how many pages of 100 have been loaded so far. It grows by one per
- * "show more" click rather than jumping to 10 at once, because the budget is
- * 10 requests/minute keyed to the visitor's IP: spending it all on the first
- * query means the second query fails. One page (~35 Pages sites) is enough for
- * an instant first screen; the rest are opt-in.
- */
-const wide = {
-  inflight: null,
-  lastQuery: "",
-  results: [],
-  total: 0,
-  pages: 0,
-  truncated: false,
-  hasMore: false,
-  partial: null,
-  error: null,
-  loading: false,
-  /**
-   * Liveness verdicts, keyed by site URL.
-   *
-   * The local index is verified by the offline probe, but these results come
-   * straight from GitHub, where `has_pages` is a repository setting that can be
-   * weeks out of date with reality. A repo can have Pages switched on and serve
-   * nothing at the derived URL, which is exactly what happens when the project
-   * moved to a custom domain.
-   */
-  live: new Map(),
-  verifyToken: 0,
-};
-
-/** Pages loaded per click. One page = 100 repos = ~35 Pages sites. */
-const WIDE_PAGE_STEP = 1;
-
-/** Debounce before asking GitHub, so typing does not spend the rate limit. */
-const WIDE_DEBOUNCE_MS = 700;
-
-/**
- * How many on-demand results to liveness-check, and in what size batches.
- *
- * Each check is a Worker invocation that makes a real request to someone else's
- * site, so this is capped rather than exhaustive: it covers the top results on
- * screen, which are the ones anyone is likely to click.
- */
-const LIVE_CHECK_LIMIT = 24;
-
-/** URLs per batch. The worker allows twelve per call and six distinct hosts. */
-const LIVE_CHECK_CHUNK = 6;
-
-async function runWideSearch(opts = {}) {
+async function runSearch(opts = {}) {
   const q = $("q").value.trim();
   if (!q) {
-    resetWide();
-    renderWide();
+    resetSearch();
+    renderResults();
+    showIdle(true);
     return;
   }
 
-  const fresh = opts.fresh || wide.lastQuery !== q;
-  if (!fresh && wide.results.length && !opts.more) return;
-  // "More" is an explicit click, so it always spends a request.
-  const pages = fresh ? WIDE_PAGE_STEP : wide.pages + WIDE_PAGE_STEP;
+  const fresh = opts.fresh || state.lastQuery !== q;
+  if (!fresh && !opts.more && state.rows.length) return;
+  const pages = fresh ? WIDE_PAGE_STEP : state.pages + WIDE_PAGE_STEP;
 
-  wide.inflight?.abort();
+  state.inflight?.abort();
   const ctrl = new AbortController();
-  wide.inflight = ctrl;
-  wide.loading = true;
+  state.inflight = ctrl;
+  state.loading = true;
   if (fresh) {
-    wide.error = null;
-    wide.partial = null;
+    state.error = null;
+    state.partial = null;
   }
-  renderWide(fresh ? "Asking GitHub…" : null);
+  renderResults(fresh ? "Searching GitHub…" : null);
 
-    const { searchGitHub } = await import("./github-search.js");
+  const { searchGitHub } = await import("./github-search.js");
 
   /**
    * An aborted search is not a failure, it is a superseded one: typing another
@@ -264,55 +249,98 @@ async function runWideSearch(opts = {}) {
     });
   } catch (err) {
     if (err && err.name === "AbortError") {
-      wide.inflight = null;
-      wide.loading = false;
+      state.inflight = null;
+      state.loading = false;
       return;
     }
-    wide.inflight = null;
-    wide.loading = false;
-    wide.error = `Could not reach GitHub (${String(err).slice(0, 60)}).`;
-    renderWide();
+    state.inflight = null;
+    state.loading = false;
+    state.error = `Could not reach GitHub (${String(err).slice(0, 60)}).`;
+    renderResults();
     return;
   }
   if (ctrl.signal.aborted) return;
 
-  wide.inflight = null;
-  wide.loading = false;
-  wide.lastQuery = q;
-  wide.pages = res.pagesFetched;
-  wide.results = res.results;
-  wide.total = res.total;
-  wide.truncated = res.truncated;
-  wide.hasMore = res.hasMore;
-  wide.partial = res.partial ?? null;
-  wide.error = res.error ?? null;
+  state.inflight = null;
+  state.loading = false;
+  state.lastQuery = q;
+  state.q = q;
+  state.pages = res.pagesFetched;
+  state.rows = res.results;
+  state.total = res.total;
+  state.truncated = res.truncated;
+  state.hasMore = res.hasMore;
+  state.partial = res.partial ?? null;
+  state.error = res.error ?? null;
 
   // Verdicts are kept across queries on purpose: a URL that resolved five
   // minutes ago will very likely resolve now, and re-checking it would spend
   // another Worker request for no new information. Bounded so a long session
   // cannot grow it without limit.
-  if (wide.live.size > 200) wide.live.clear();
+  if (state.live.size > 200) state.live.clear();
 
-  renderWide();
+  showIdle(false);
+  await classifyRows();
+  renderResults();
+
   // Liveness is a follow-up, not part of the search: the list appears first and
   // gains badges as answers arrive, so a slow site never delays results.
-  if (!wide.error) verifyWideResults();
+  if (!state.error) verifyResults();
 }
 
-/** Drop every on-demand result; used when the query box is cleared. */
-function resetWide() {
-  wide.inflight?.abort();
-  wide.inflight = null;
-  wide.loading = false;
-  wide.lastQuery = "";
-  wide.results = [];
-  wide.total = 0;
-  wide.pages = 0;
-  wide.truncated = false;
-  wide.hasMore = false;
-  wide.partial = null;
-  wide.error = null;
+/** Drop every result; used when the query box is cleared. */
+function resetSearch() {
+  state.inflight?.abort();
+  state.inflight = null;
+  state.loading = false;
+  state.lastQuery = "";
+  state.q = "";
+  state.rows = [];
+  state.total = 0;
+  state.pages = 0;
+  state.truncated = false;
+  state.hasMore = false;
+  state.partial = null;
+  state.error = null;
+  state.shown = [];
+  state.cats = [];
 }
+
+// ---------------------------------------------------------------- classify
+
+/**
+ * Derive categories from the topics in the current result set.
+ *
+ * The taxonomy used to run offline, at publish time, and the categories were
+ * baked into the index. With no index it runs here, over the same topics GitHub
+ * just returned, so browse-by-category survives on live results.
+ *
+ * The consequence to keep visible is in the counts: a chip says how many of the
+ * results on screen are in that category, not how many such sites exist.
+ */
+async function classifyRows() {
+  if (!state.rows.length) {
+    state.cats = [];
+    return;
+  }
+  const { classify, CATEGORY_LABELS } = await import("./taxonomy.js");
+  state.catLabels = CATEGORY_LABELS;
+
+  const counts = new Map();
+  for (const r of state.rows) {
+    let cats;
+    try {
+      cats = classify(r.topics ?? []).categories;
+    } catch {
+      cats = [];
+    }
+    r._cats = cats;
+    for (const c of cats) counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  state.cats = [...counts.entries()];
+}
+
+// ---------------------------------------------------------------- liveness
 
 const LIVE_BADGES = {
   checking: { cls: "live-checking", text: "checking…" },
@@ -323,48 +351,23 @@ const LIVE_BADGES = {
   error: { cls: "live-unknown", text: "unverified" },
 };
 
+const LIVE_WHY = {
+  blocked: "This site refused an automated request. It may still work in a browser.",
+  gone: "The site did not answer. The repo says Pages is on, but nothing is served here.",
+  unreachable: "The host did not respond.",
+  alive: "Checked just now and responding.",
+};
+
 function livePillHtml(url) {
-  const v = wide.live.get(url);
+  const v = state.live.get(url);
   const badge = LIVE_BADGES[v];
   if (!badge) return "";
-  const why =
-    v === "blocked"
-      ? "This site refused an automated request. It may still work in a browser."
-      : v === "gone"
-        ? "The site did not answer. The repo says Pages is on, but nothing is served here."
-        : v === "unreachable"
-          ? "The host did not respond."
-          : v === "alive"
-            ? "Checked just now and responding."
-            : "";
+  const why = LIVE_WHY[v];
   return `<span class="pill ${badge.cls}"${why ? ` title="${esc(why)}"` : ""}>${esc(badge.text)}</span>`;
 }
 
-function wideRowHtml(r) {
-  const href = r.url;
-  if (!href) return "";
-  const title = r.full_name || `${r.owner}/${r.repo}`;
-  const tags = (r.topics ?? [])
-    .slice(0, 4)
-    .map((t) => `<span class="tag">${esc(t)}</span>`)
-    .join("");
-  const stars = Number(r.stars) || 0;
-  const starBadge = stars
-    ? `<span class="pill stars" title="${stars.toLocaleString()} GitHub stars">★ ${stars.toLocaleString()}</span>`
-    : "";
-  // data-live lets a finished check patch its own row instead of re-rendering
-  // the list, which would otherwise move the page under the reader.
-  return `<article class="row" data-live="${esc(href)}">
-    <h3><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>
-      ${livePillHtml(href)}${starBadge}<span class="pill">not indexed</span></h3>
-    <div class="url">${esc(href)}</div>
-    ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
-    <div class="tags">${tags}</div>
-  </article>`;
-}
-
 /**
- * Liveness-check the on-demand results, then patch each row as its answer lands.
+ * Liveness-check the results, then patch each row as its answer lands.
  *
  * Deliberately not awaited by the search: results appear immediately and are
  * annotated afterwards, so a slow or unreachable site never delays the list.
@@ -377,7 +380,7 @@ function wideRowHtml(r) {
  * visitor asking about the same site is answered from the edge instead of
  * reaching that site's host again.
  */
-async function verifyWideResults() {
+async function verifyResults() {
   const { verifyLivenessBatch, edgeEndpoint } = await import("./github-search.js");
 
   /**
@@ -388,17 +391,17 @@ async function verifyWideResults() {
    */
   if (!edgeEndpoint()) return;
 
-  const token = ++wide.verifyToken;
+  const token = ++state.verifyToken;
 
-  const pending = wide.results
+  const pending = state.rows
     .map((r) => r.url)
-    .filter((u) => u && !wide.live.has(u))
+    .filter((u) => u && !state.live.has(u))
     .slice(0, LIVE_CHECK_LIMIT);
   if (!pending.length) return;
 
   // Marking first means a row renders as "checking…" immediately instead of
   // looking unverified while the request is in flight.
-  for (const u of pending) wide.live.set(u, "checking");
+  for (const u of pending) state.live.set(u, "checking");
   paintLiveRows();
 
   // The worker's batch endpoint caps a call at twelve URLs and six distinct
@@ -413,8 +416,8 @@ async function verifyWideResults() {
       found = new Map();
     }
     // A newer search has taken over; stop annotating rows that are gone.
-    if (token !== wide.verifyToken) return;
-    for (const u of chunk) wide.live.set(u, found.get(u)?.verdict ?? "error");
+    if (token !== state.verifyToken) return;
+    for (const u of chunk) state.live.set(u, found.get(u)?.verdict ?? "error");
     paintLiveRows();
   }
 }
@@ -425,180 +428,27 @@ async function verifyWideResults() {
  * the list can be long.
  */
 function paintLiveRows() {
-  for (const row of document.querySelectorAll("#wide-results [data-live]")) {
+  for (const row of document.querySelectorAll("#results [data-live]")) {
     const url = row.getAttribute("data-live");
-    const v = wide.live.get(url);
+    const v = state.live.get(url);
     if (!v) continue;
     const badge = LIVE_BADGES[v];
     row.classList.toggle("is-gone", v === "gone" || v === "unreachable");
-    let pill = row.querySelector(".pill.live-alive, .pill.live-gone, .pill.live-blocked, .pill.live-unknown, .pill.live-checking");
+    let pill = row.querySelector(
+      ".pill.live-alive, .pill.live-gone, .pill.live-blocked, .pill.live-unknown, .pill.live-checking",
+    );
     if (!pill) {
-      const host = row.querySelector("h3");
+      const host = row.querySelector("h3, .title");
       if (!host) continue;
       pill = document.createElement("span");
-      const idx = host.querySelector(".pill");
-      host.insertBefore(pill, idx ?? null);
+      host.insertBefore(pill, host.firstChild);
     }
-      pill.className = `pill ${badge.cls}`;
+    pill.className = `pill ${badge.cls}`;
     pill.textContent = badge.text;
-    const why =
-      v === "blocked"
-        ? "This site refused an automated request. It may still work in a browser."
-        : v === "gone"
-          ? "The site did not answer. The repo says Pages is on, but nothing is served here."
-          : v === "unreachable"
-            ? "The host did not respond."
-            : v === "alive"
-              ? "Checked just now and responding."
-              : "";
+    const why = LIVE_WHY[v];
     if (why) pill.setAttribute("title", why);
     else pill.removeAttribute("title");
   }
-}
-
-/**
- * Render the on-demand results section.
- *
- * The id is `wide-results`, NOT `wide`: the trigger button is already
- * id="wide", and $("wide") here was resolving to that button, so the section
- * was never created and its HTML was written into the button instead.
- */
-function renderWide(statusText) {
-  let el = $("wide-results");
-  if (!el) {
-    el = document.createElement("section");
-    el.id = "wide-results";
-    el.className = "wide";
-    el.setAttribute("aria-live", "polite");
-    // Inside <main>, but BEFORE the scroll sentinel: the sentinel drives
-    // infinite scroll and must stay the last element, or appended results
-    // would land after the "load more" trigger.
-    $("sentinel").before(el);
-  }
-
-  if (statusText) {
-    el.innerHTML = `<h2>Searching all of GitHub</h2><p class="note">${esc(statusText)}</p>`;
-    return;
-  }
-  if (wide.error) {
-    el.innerHTML = `<h2>Search all of GitHub</h2><p class="note">${esc(wide.error)}</p>`;
-    return;
-  }
-  if (!wide.results.length) {
-    el.innerHTML = "";
-    return;
-  }
-
-  const n = wide.results.length;
-  const bits = [`${n.toLocaleString()} Pages site${n === 1 ? "" : "s"} from GitHub, most popular first`];
-  if (wide.total > n) {
-    bits.push(
-      `GitHub reports ${wide.total.toLocaleString()} matching repos` +
-        (wide.truncated ? ", and never returns more than 1,000 per query" : ""),
-    );
-  }
-  if (wide.pages) bits.push(`${wide.pages} of up to 10 pages loaded`);
-  if (wide.partial) bits.push(wide.partial);
-  // The index below is verified offline. These come from GitHub, where
-  // `has_pages` is a repository setting that can be weeks stale, so each one is
-  // link-checked separately and badged with what was actually found.
-  const checked = [...wide.live.values()].filter((v) => v !== "checking").length;
-  bits.push(
-    checked
-      ? `Each result is link-checked as you see it. ${checked} checked; ` +
-          `"blocks bots" means it refused an automated request, not that it is down.`
-      : "Outside this index, so each result is link-checked separately.",
-  );
-
-  const more =
-    wide.hasMore || wide.loading
-      ? `<button type="button" id="wide-more" class="btn" ${wide.loading ? "disabled" : ""}>` +
-        (wide.loading ? "Loading…" : `Show more (${n.toLocaleString()} so far)`) +
-        `</button>`
-      : wide.total > n
-        ? `<p class="note">Reached GitHub's per-query limit. Narrow the search to see different results.</p>`
-        : "";
-
-  el.innerHTML =
-    `<h2>Also on GitHub</h2><p class="note">${esc(bits.join(" "))}</p>` +
-    wide.results.map(wideRowHtml).join("") +
-    more;
-}
-
-function tagsHtml(row) {
-  const cats = (row.c ?? [])
-    .map((c) => `<span class="cat-chip" title="${esc(state.catLabels[c] ?? c)}">${esc(state.catLabels[c] ?? c)}</span>`)
-    .join("");
-  const tags = (row.g ?? [])
-    .slice(0, 3)
-    .map((g) => `<span class="tag">${esc(g)}</span>`)
-    .join("");
-  return `<span class="chips">${cats}${tags}</span>`;
-}
-
-// ---------------------------------------------------------------- idle state
-
-/**
- * The prompt shown when there is no query.
- *
- * It replaces a front page rather than decorating one. With nothing typed there
- * is no honest list to show: the unfiltered order is by stars, and the top of
- * that is framework documentation and "awesome" lists, which answers a question
- * nobody asked. An earlier version answered it with hand-picked shelves, which
- * then had to be re-picked every time the publish quota moved. So the prompt
- * says what the search covers and offers starting points instead, and every one
- * of those starting points is checked to return results by
- * src/publish/test-idle.ts.
- */
-function showIdle(on) {
-  const el = $("idle");
-  if (el) el.hidden = !on;
-  if (on) {
-    $("meta").textContent = "";
-    $("facets").innerHTML = "";
-    const wide_ = $("wide-results");
-    if (wide_) wide_.innerHTML = "";
-  }
-}
-
-function hasFilters() {
-  return state.activeTags.size > 0 || state.activeCats.size > 0 || state.minStars > 0;
-}
-
-/**
- * Run a query, or fall back to the prompt.
- *
- * A bare empty query is never sent to the worker. It would match every row, so
- * the worker would fetch all 27 shards to build a leaderboard nobody asked for
- * — which is exactly the cost the previous front page paid on every arrival.
- * Category chips still browse, because they set a filter, and a filter with no
- * text genuinely does need the whole index.
- */
-function runSearch() {
-  state.reqId++;
-  const q = $("q").value.trim();
-  if (!q && !hasFilters()) {
-    state.rows = [];
-    state.total = 0;
-    state.tags = [];
-    state.cats = [];
-    state.rendered = 0;
-    $("results").innerHTML = "";
-    showIdle(true);
-    return;
-  }
-  $("meta").textContent = "Searching…";
-  showIdle(false);
-  worker.postMessage({
-    type: "query",
-    id: state.reqId,
-    q: $("q").value,
-    filters: {
-      tags: [...state.activeTags],
-      cats: [...state.activeCats],
-      minStars: state.minStars,
-    },
-  });
 }
 
 // ---------------------------------------------------------------- facets
@@ -606,14 +456,10 @@ function runSearch() {
 /**
  * Categories are the browse control (they answer "what kind of thing is
  * this?"). Raw topics are secondary detail and only appear once a query has
- * told us which ones this corpus actually uses.
- *
- * The chips take their counts from the manifest on arrival, so browsing costs
- * nothing. After a search they are redrawn with counts scoped to the query,
- * which is the more useful number while refining a result.
+ * told us which ones this result set actually uses.
  */
-function renderCatChips(cats) {
-  const list = cats
+function renderCatChips() {
+  const list = state.cats
     .map(([id, n]) => ({ id, n, label: state.catLabels[id] ?? id }))
     .sort((a, b) => b.n - a.n);
 
@@ -627,13 +473,19 @@ function renderCatChips(cats) {
 }
 
 function renderFacets() {
-  renderCatChips(state.cats);
-
-  const shown = state.tags.slice(0, 18);
+  const counts = new Map();
+  for (const r of state.shown) {
+    for (const t of r.topics ?? []) {
+      counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+  }
+  const shown = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 18);
+  // Hidden entirely when empty, so the header does not reserve a blank band.
+  $("filterbar").hidden = !state.cats.length && !shown.length;
   $("facets").innerHTML = shown
     .map(
       ([t, n]) =>
-        `<button type="button" class="facet" data-tag="${esc(t)}" aria-pressed="${state.activeTags.has(t)}">` +
+        `<button type="button" class="facet" data-tag="${esc(t.toLowerCase())}" aria-pressed="${state.activeTags.has(t.toLowerCase())}">` +
         `${esc(t)}<span class="n">${n}</span></button>`,
     )
     .join("");
@@ -645,7 +497,7 @@ $("cats").addEventListener("click", (e) => {
   const id = btn.dataset.cat;
   if (state.activeCats.has(id)) state.activeCats.delete(id);
   else state.activeCats.add(id);
-  runSearch();
+  refilter();
 });
 
 $("facets").addEventListener("click", (e) => {
@@ -654,41 +506,73 @@ $("facets").addEventListener("click", (e) => {
   const tag = btn.dataset.tag;
   if (state.activeTags.has(tag)) state.activeTags.delete(tag);
   else state.activeTags.add(tag);
-  runSearch();
+  refilter();
 });
+
+/**
+ * Re-apply facets to the results already in hand.
+ *
+ * No network call: a facet can only remove rows from the current page, so
+ * filtering client-side is both correct and the only thing that avoids spending
+ * the shared rate-limit budget on a narrowing that GitHub has already answered.
+ */
+function refilter() {
+  renderResults();
+}
 
 // ---------------------------------------------------------------- render
 
+function tagsHtml(r) {
+  const cats = (r._cats ?? [])
+    .map((c) => `<span class="cat-chip" title="${esc(state.catLabels[c] ?? c)}">${esc(state.catLabels[c] ?? c)}</span>`)
+    .join("");
+  const tags = (r.topics ?? [])
+    .slice(0, 4)
+    .map((g) => `<span class="tag">${esc(g)}</span>`)
+    .join("");
+  return `<span class="chips">${cats}${tags}</span>`;
+}
+
+function starBadge(r) {
+  const stars = Number(r.stars) || 0;
+  return stars
+    ? `<span class="pill stars" title="${stars.toLocaleString()} GitHub stars">★ ${stars.toLocaleString()}</span>`
+    : "";
+}
+
 function rowHtml(r) {
-  const href = safeUrl(r.u);
+  const href = safeUrl(r.url);
   if (!href) return "";
-  return `<article class="row">
-    <h3><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(r.t ?? r.r)}</a></h3>
+  const title = r.full_name || `${r.owner}/${r.repo}`;
+  return `<article class="row" data-live="${esc(href)}">
+    <h3>${livePillHtml(href)}<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>${starBadge(r)}</h3>
     <div class="url">${esc(href)}</div>
-    ${r.d ? `<div class="desc">${esc(r.d)}</div>` : ""}
-    <div class="tags">${tagsHtml(r)}</div>
+    ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
+    ${tagsHtml(r)}
     <div class="row-actions">
       <a href="${esc(reportBrokenUrl(href))}" target="_blank" rel="noopener noreferrer">Report problem</a>
-      <a href="${esc(submitSiteUrl(href, r.o))}" target="_blank" rel="noopener noreferrer">Claim / submit</a>
+      <a href="${esc(submitSiteUrl(href, r.owner))}" target="_blank" rel="noopener noreferrer">Claim / submit</a>
     </div>
   </article>`;
 }
 
 function cardHtml(r) {
-  const href = safeUrl(r.u);
+  const href = safeUrl(r.url);
   if (!href) return "";
   // sandbox blocks scripts/top-navigation in previews; allow-same-origin keeps
   // the about:blank heuristic working. A hostile page still cannot script
   // against our origin because we send no cookies and use a null referrer.
-  return `<article class="card">
+  const title = r.full_name || `${r.owner}/${r.repo}`;
+  return `<article class="card" data-live="${esc(href)}">
     <div class="frame">
       <iframe src="${esc(href)}" loading="lazy" sandbox="allow-same-origin"
-              referrerpolicy="no-referrer" title="Preview of ${esc(r.t ?? r.r)}"></iframe>
+              referrerpolicy="no-referrer" title="Preview of ${esc(title)}"></iframe>
       <div class="fallback">Preview unavailable —<br /><a href="${esc(href)}"
         target="_blank" rel="noopener noreferrer">open site</a></div>
     </div>
     <div class="info">
-      <a class="title" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(r.t ?? r.r)}</a>
+      <span class="card-head">${livePillHtml(href)}${starBadge(r)}</span>
+      <a class="title" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>
       <div class="u">${esc(href)}</div>
       <div class="tags">${tagsHtml(r)}</div>
     </div>
@@ -698,18 +582,19 @@ function cardHtml(r) {
 function renderPage() {
   const el = $("results");
   el.className = state.view === "grid" ? "grid" : "list";
-  const slice = state.rows.slice(state.rendered, state.rendered + PAGE);
-  const html = state.view === "grid" ? slice.map(cardHtml).join("") : slice.map(rowHtml).join("");
-  if (state.rendered === 0) el.innerHTML = html;
-  else el.insertAdjacentHTML("beforeend", html);
+  const slice = state.shown.slice(state.rendered, state.rendered + PAGE);
+  const rows = state.view === "grid" ? slice.map(cardHtml).join("") : slice.map(rowHtml).join("");
+  if (state.rendered === 0) {
+    // The summary and the "show more" control are rebuilt with the first page,
+    // then left alone as the sentinel appends more rows: they describe the
+    // result set, not the slice currently on screen.
+    el.innerHTML = rows + `<p class="note">${summaryHtml()}</p>` + moreHtml();
+  } else {
+    el.insertAdjacentHTML("beforeend", rows);
+  }
   state.rendered += slice.length;
 
-  if (state.view === "grid") attachFrameFallbacks();
-
-  $("sentinel").hidden = state.rendered >= state.rows.length;
-  if (state.rendered === 0) {
-    el.innerHTML = `<div class="empty">No matches. Try a shorter query or clear a filter.</div>`;
-  }
+  $("sentinel").hidden = state.rendered >= state.shown.length;
 }
 
 /**
@@ -727,15 +612,122 @@ function renderPage() {
  * A site that refuses framing renders as a blank box; the title and link below
  * the frame always remain, so the card is still usable.
  */
-function attachFrameFallbacks() {
-  // Intentionally a no-op. Kept as a seam in case a future service can supply
-  // real screenshot thumbnails, which would be the only reliable fix.
+
+/** The header line: how many results, from where, and what was checked. */
+function summaryHtml() {
+  const n = state.shown.length;
+  const bits = [`${n.toLocaleString()} Pages site${n === 1 ? "" : "s"}, live from GitHub`];
+  if (hasFilters() && n !== state.rows.length) {
+    bits.push(`filtered from ${state.rows.length.toLocaleString()}`);
+  }
+  if (state.total > state.rows.length) {
+    bits.push(
+      `GitHub reports ${state.total.toLocaleString()} matching repos` +
+        (state.truncated ? ", and never returns more than 1,000 per query" : ""),
+    );
+  }
+  if (state.pages) bits.push(`${state.pages} of up to 10 pages loaded`);
+  if (state.partial) bits.push(state.partial);
+  const checked = [...state.live.values()].filter((v) => v !== "checking").length;
+  bits.push(
+    checked
+      ? `${checked} link-checked just now; "blocks bots" means it refused an automated request, not that it is down.`
+      : "Every result is link-checked as it appears.",
+  );
+  return esc(bits.join(" · "));
+}
+
+function moreHtml() {
+  if (state.hasMore || state.loading) {
+    return `<button type="button" id="wide-more" class="btn" ${state.loading ? "disabled" : ""}>` +
+      (state.loading ? "Loading…" : `Show more (${state.rows.length.toLocaleString()} so far)`) +
+      `</button>`;
+  }
+  if (state.total > state.rows.length) {
+    return `<p class="note">Reached GitHub's per-query limit. Narrow the search to see different results.</p>`;
+  }
+  return "";
+}
+
+/**
+ * Draw the result set, or the reason there isn't one.
+ *
+ * `statusText` covers the in-flight state so the box shows progress rather than
+ * the previous query's answer.
+ */
+function renderResults(statusText) {
+  const el = $("results");
+  // The class follows the current view even for the placeholder states, so an
+  // in-flight search or an error cannot silently switch a reader out of grid
+  // view and leave the toggle claiming otherwise.
+  const cls = state.view === "grid" ? "grid" : "list";
+  if (statusText) {
+    el.className = cls;
+    el.innerHTML = `<div class="empty">${esc(statusText)}</div>`;
+    $("filterbar").hidden = true;
+    $("sentinel").hidden = true;
+    return;
+  }
+  if (state.error) {
+    el.className = cls;
+    el.innerHTML = `<div class="empty">${esc(state.error)}</div>`;
+    $("filterbar").hidden = true;
+    $("sentinel").hidden = true;
+    return;
+  }
+
+  state.shown = state.rows.filter(passesFilters);
+  state.rendered = 0;
+
+  if (!state.shown.length) {
+    el.className = cls;
+    el.innerHTML =
+      `<div class="empty">No Pages sites matched${hasFilters() ? " with those filters" : ""}. ` +
+      `Try a shorter search.</div>`;
+    // A page with nothing on it has no facets worth offering, and the counts
+    // would be describing an empty set.
+    $("filterbar").hidden = true;
+    $("sentinel").hidden = true;
+    return;
+  }
+
+  renderPage();
+  // Chips last: they count what was actually rendered, so filtering by one
+  // category shows how the rest of the current set is distributed.
+  renderCatChips();
+  renderFacets();
+  paintLiveRows();
+}
+
+// ---------------------------------------------------------------- idle state
+
+/**
+ * The prompt shown when there is no query.
+ *
+ * It replaces a front page rather than decorating one. With nothing typed there
+ * is no honest list to show: there is no index to browse, and the unfiltered
+ * order would be whatever GitHub happened to rank first. So the prompt says what
+ * the search covers and offers starting points instead.
+ */
+function showIdle(on) {
+  const el = $("idle");
+  if (el) el.hidden = !on;
+  if (on) {
+    // The chips count a result set that is no longer on screen, so they are
+    // cleared rather than merely hidden: leaving them in the DOM means the next
+    // search can read stale counts before its own have arrived.
+    $("filterbar").hidden = true;
+    $("cats").innerHTML = "";
+    $("facets").innerHTML = "";
+    $("results").innerHTML = "";
+    $("sentinel").hidden = true;
+  }
 }
 
 // Infinite page-in, only while more results remain.
 new IntersectionObserver(
   (entries) => {
-    if (entries.some((e) => e.isIntersecting) && state.rendered < state.rows.length) {
+    if (entries.some((e) => e.isIntersecting) && state.rendered < state.shown.length) {
       renderPage();
     }
   },
@@ -744,22 +736,18 @@ new IntersectionObserver(
 
 // ---------------------------------------------------------------- controls
 
+let debounce;
+
 $("f").addEventListener("submit", (e) => {
+  // Submitting bypasses the debounce: the visitor has stopped typing and asked.
   e.preventDefault();
-  runSearch();
+  clearTimeout(debounce);
+  runSearch({ fresh: true });
 });
 
-let debounce;
-let wideDebounce;
 $("q").addEventListener("input", () => {
   clearTimeout(debounce);
-  debounce = setTimeout(runSearch, 200);
-  // Ask GitHub too, but only once typing pauses. The unauthenticated search
-  // budget is 10 requests/minute keyed to the visitor's IP, so searching on
-  // every keystroke would exhaust it within one sentence. A pause means a
-  // deliberate query.
-  clearTimeout(wideDebounce);
-  wideDebounce = setTimeout(() => runWideSearch(), WIDE_DEBOUNCE_MS);
+  debounce = setTimeout(() => runSearch({ fresh: true }), DEBOUNCE_MS);
 });
 
 /**
@@ -770,14 +758,13 @@ $("examples").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-example]");
   if (!btn) return;
   $("q").value = btn.dataset.example;
-  runSearch();
-  runWideSearch({ fresh: true });
+  runSearch({ fresh: true });
 });
 
 /** "Show more" is delegated, because the button is re-rendered on every update. */
 document.addEventListener("click", (e) => {
   if (e.target instanceof HTMLElement && e.target.id === "wide-more") {
-    runWideSearch({ more: true });
+    runSearch({ more: true });
   }
 });
 
@@ -789,61 +776,51 @@ $("view").addEventListener("click", () => {
   const label = btn.querySelector("span");
   if (label) label.textContent = state.view === "grid" ? "List view" : "Previews";
   btn.title = state.view === "grid" ? "Back to list view" : "Show a live preview of each site";
-  state.rendered = 0;
-  renderPage();
+  renderResults();
 });
 
 $("stars").addEventListener("change", (e) => {
   state.minStars = Number(e.target.value);
-  runSearch();
+  refilter();
 });
 
 /**
- * The button now only reveals the token field.
+ * The button only reveals the token field.
  *
- * Searching GitHub used to require this click. It does not any more: typing
- * triggers a debounced search automatically. Keeping an explicit trigger would
- * suggest the on-demand results are optional, when they are now the wider half
- * of every search, so the button is reduced to the one thing that genuinely
- * still needs a click -- supplying a token.
+ * Searching GitHub is automatic now, so an explicit trigger would suggest the
+ * results are optional. It is reduced to the one thing that genuinely needs a
+ * click: supplying a token, which raises the limit when the shared budget is
+ * exhausted.
  */
 $("wide").addEventListener("click", () => {
   const showing = $("tokenrow").hidden;
   $("tokenrow").hidden = !showing;
   if (showing) $("token").focus();
   // Re-run only if there is already something to extend.
-  if (!showing && wide.lastQuery) runWideSearch({ fresh: true });
+  if (!showing && state.lastQuery) runSearch({ fresh: true });
 });
 
 // A token is supplied per tab; it is never written to storage.
 $("token").addEventListener("change", () => {
-  if (wide.lastQuery) {
+  if (state.lastQuery) {
     // Re-run so the new limit takes effect for the current query.
-    wide.lastQuery = "";
-    runWideSearch({ fresh: true });
+    state.lastQuery = "";
+    runSearch({ fresh: true });
   }
 });
 
 // ---------------------------------------------------------------- boot
 
-try {
-  const res = await fetch(`${DATA}manifest.json`);
-  if (!res.ok) throw new Error(`manifest ${res.status}`);
-  state.manifest = await res.json();
-  for (const c of state.manifest.categories ?? []) state.catLabels[c.id] = c.label;
+/**
+ * Boot loads the report config only. There is no manifest and no index, so the
+ * page costs nothing until a search is typed, and a missing reports.json is
+ * harmless: it only decides which repository a report link points at.
+ */
+fetch("./data/reports.json")
+  .then((r) => (r.ok ? r.json() : null))
+  .then((cfg) => {
+    if (cfg?.repo) reportRepo = cfg.repo;
+  })
+  .catch(() => {});
 
-  // Report links are optional: a missing config must not break search.
-  fetch(`${DATA}reports.json`)
-    .then((r) => (r.ok ? r.json() : null))
-    .then((cfg) => { if (cfg?.repo) reportRepo = cfg.repo; })
-    .catch(() => {});
-
-  worker.postMessage({ type: "init", manifest: state.manifest });
-  // Nothing is searched on arrival. The category chips come out of the manifest
-  // we already have, so the page costs one small request and the prompt stands
-  // in until the reader types.
-  renderCatChips((state.manifest.categories ?? []).map((c) => [c.id, c.count ?? 0]));
-  showIdle(true);
-} catch (err) {
-  $("meta").textContent = `Could not load index: ${err.message}. Run 'bun run build'.`;
-}
+showIdle(true);
