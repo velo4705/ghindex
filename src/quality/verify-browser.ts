@@ -530,6 +530,68 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
   );
   check("and jumping back to page 1 works", backTo1 === true);
 
+  // --- the buffer: clicking through several pages quickly -------------------
+  //
+  // The case this exists for: you land on the wrong page and click through
+  // several numbers to find the right one. Each click aborts the request before
+  // it, so only the last is paid for, and the list on screen stays readable
+  // throughout instead of flashing an empty "Searching GitHub…".
+  const firstRowBefore = await evalJs(`document.querySelector('#results .row h3 a')?.textContent ?? ''`);
+
+  // Three clicks in one turn, with no waiting between them.
+  await evalJs(`(() => {
+    for (const n of [3, 5, 4]) {
+      document.querySelector('#results .pagebtn[data-page="' + n + '"]')?.click();
+    }
+    return 1;
+  })()`);
+
+  // Immediately afterwards the list must still be there. A click that replaced it
+  // with a placeholder would leave the reader staring at "Searching GitHub…" for
+  // every page they click through.
+  const duringLoad = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+    const el = document.getElementById('results');
+    return {
+      rows: el.querySelectorAll('.row').length,
+      busy: el.getAttribute('aria-busy'),
+      status: document.querySelector('.pagestatus')?.textContent ?? '',
+      pending: document.querySelector('.pagebtn.pending')?.textContent ?? '',
+      current: document.querySelector('.pagebtn.current')?.textContent ?? '',
+      // Still clickable: greying the control out would break the very case this
+      // is for.
+      disabled: el.querySelectorAll('.pagebtn[disabled]').length,
+    };
+  })())`)));
+  check("the previous page stays on screen while the next loads",
+    duringLoad.rows > 0, `${duringLoad.rows} rows`);
+  check("and is announced as busy", duringLoad.busy === "true", `aria-busy=${duringLoad.busy}`);
+  check("the pager says which page is loading", /Loading page 4/.test(duringLoad.status), JSON.stringify(duringLoad.status));
+  check("the requested page is marked pending", duringLoad.pending === "4", `pending=${duringLoad.pending}`);
+  check("the page already shown stays marked current", duringLoad.current === "1", `current=${duringLoad.current}`);
+  check("the buttons stay clickable", duringLoad.disabled === 0, `${duringLoad.disabled} disabled`);
+
+  // Only the last click should land: page 4, not page 3 or 5.
+  const landed = await waitFor(
+    evalJs,
+    `document.querySelector('#results .pagebtn.current')?.textContent === '4'`,
+  );
+  check("only the last click takes effect", landed === true);
+
+  const settled = await evalJs(`JSON.stringify((() => {
+    const el = document.getElementById('results');
+    return {
+      first: el.querySelector('.row h3 a')?.textContent ?? '',
+      busy: el.getAttribute('aria-busy'),
+      status: document.querySelector('.pagestatus')?.textContent ?? '',
+      pending: document.querySelector('.pagebtn.pending')?.textContent ?? '',
+    };
+  })())`);
+  const s2 = JSON.parse(String(settled));
+  check("the new page's rows replace the old", s2.first !== firstRowBefore, `${firstRowBefore} -> ${s2.first}`);
+  check("and the busy state clears afterwards",
+    s2.busy === "false" && s2.status === "" && s2.pending === "",
+    `busy=${s2.busy} status="${s2.status}" pending=${s2.pending}`);
+
   check("there is exactly one results container", await evalJs(`document.querySelectorAll('#results').length`) === 1);
 
 // The result list has to be as wide as the tag band: the "Searching GitHub…"

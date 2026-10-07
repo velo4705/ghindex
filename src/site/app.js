@@ -59,6 +59,8 @@ const state = {
   total: 0,
   /** Which page of results is on screen, 1-based. */
   page: 1,
+  /** The page being fetched, or 0 when nothing is in flight. */
+  pendingPage: 0,
   /** How many pages exist for the current query. */
   pageCount: 0,
   truncated: false,
@@ -145,16 +147,30 @@ async function runSearch(opts = {}) {
   const page = fresh ? 1 : opts.page;
   if (!fresh && !page) return;
 
+  // Whether the list on screen can stay while this loads. A new query has no
+  // results to keep; a page change does, and replacing them with a loading
+  // message throws away what the reader was reading.
+  const keepResults = !fresh && state.rows.length > 0;
+
   state.inflight?.abort();
   const ctrl = new AbortController();
   state.inflight = ctrl;
   state.loading = true;
   state.hasQuery = true;
+  state.pendingPage = page;
   if (fresh) {
     state.error = null;
     state.partial = null;
   }
-  renderResults(fresh ? "Searching GitHub…" : null);
+
+  if (keepResults) {
+    // Only the pager changes: same rows, same scroll position, with the control
+    // showing the fetch in progress.
+    renderPager();
+    $("results").setAttribute("aria-busy", "true");
+  } else {
+    renderResults(fresh ? "Searching GitHub…" : null);
+  }
 
   const { searchGitHub } = await import("./github-search.js");
 
@@ -183,10 +199,13 @@ async function runSearch(opts = {}) {
     renderResults();
     return;
   }
+  // A superseded search aborts without touching state, so the newer one owns the
+  // busy state from here on.
   if (ctrl.signal.aborted) return;
-
   state.inflight = null;
   state.loading = false;
+  state.pendingPage = 0;
+  $("results").setAttribute("aria-busy", "false");
   state.lastQuery = q;
   state.page = res.page;
   state.pageCount = res.pages;
@@ -218,6 +237,7 @@ function resetSearch() {
   state.total = 0;
   state.page = 1;
   state.pageCount = 0;
+  state.pendingPage = 0;
   state.truncated = false;
   state.partial = null;
   state.error = null;
@@ -422,10 +442,64 @@ function rowHtml(r) {
 }
 
 function renderPage() {
-  const el = $("results");
+const el = $("results");
   el.innerHTML = state.rows.map(rowHtml).join("") +
     `<p class="note">${summaryHtml()}</p>` +
-    pagerHtml();
+    `<div id="pager"></div>`;
+  renderPager();
+}
+
+/**
+ * The page control, redrawn on its own.
+ *
+ * It lives in its own container rather than being part of the results markup so
+ * that a pending page change can update just this. Rewriting the whole results
+ * container to show a loading state would throw away the list the reader is
+ * currently looking at and put them back at the top of an empty page.
+ *
+ * While a page is in flight the control stays put and shows what it is doing.
+ * That is the buffer: the results already on screen remain readable, the buttons
+ * grey out so they cannot be double-charged, and the label names the page being
+ * fetched. Clicking several numbers in a row aborts the earlier fetches and
+ * leaves the last one standing.
+ */
+function renderPager() {
+  const host = $("pager");
+  if (!host) return;
+
+  if (state.pageCount <= 1) {
+    host.innerHTML = state.truncated && state.total > 1000
+      ? `<p class="note">GitHub returns at most 1,000 results per query, so this is all of them. Narrow the search to see different results.</p>`
+      : "";
+    return;
+  }
+
+  const busy = state.loading;
+  const buttons = [];
+  for (let p = 1; p <= state.pageCount; p++) {
+    const current = p === state.page;
+    const pending = busy && p === state.pendingPage;
+    buttons.push(
+      `<button type="button" class="pagebtn${current ? " current" : ""}${pending ? " pending" : ""}" ` +
+        `data-page="${p}"${current ? ' aria-current="page"' : ""}` +
+        `${pending ? ' aria-busy="true"' : ""}>${p}</button>`,
+    );
+  }
+
+  // The buttons stay clickable while a page loads. Disabling them was the wrong
+  // instinct: the common case is clicking through several numbers because you
+  // landed on the wrong page, and a control that greys out after one click makes
+  // that impossible. Each click aborts the previous request and issues a new one,
+  // so only the last survives and only the last is paid for.
+  const status = busy && state.pendingPage && state.pendingPage !== state.page
+    ? `<span class="pagestatus">Loading page ${state.pendingPage}…</span>`
+    : busy
+      ? `<span class="pagestatus">Loading…</span>`
+      : "";
+
+  host.innerHTML =
+    `<nav class="pager" aria-label="Result pages"${busy ? ' aria-busy="true"' : ""}>` +
+    `${status}${buttons.join("")}</nav>`;
 }
 
 /**
@@ -460,34 +534,6 @@ function summaryHtml() {
       : "Every result is link-checked as it appears.",
   );
   return esc(bits.join(" · "));
-}
-
-/**
- * Numbered page control.
- *
- * GitHub reports a total that can be in the millions while refusing to serve
- * past 1,000 results, so the honest control is the ten pages that actually exist
- * — not a "load more" that walks into a wall at page 11 and cannot say why.
- *
- * Every page number is shown. Ten is few enough that a windowed control would be
- * more machinery than it saves, and hiding pages behind ellipses is how a reader
- * ends up believing page 40 exists.
- */
-function pagerHtml() {
-  if (state.pageCount <= 1) {
-    return state.truncated && state.total > 1000
-      ? `<p class="note">GitHub returns at most 1,000 results per query, so this is all of them. Narrow the search to see different results.</p>`
-      : "";
-  }
-  const buttons = [];
-  for (let p = 1; p <= state.pageCount; p++) {
-    buttons.push(
-      `<button type="button" class="pagebtn${p === state.page ? " current" : ""}" data-page="${p}"${
-        p === state.page ? ' aria-current="page"' : ""
-      }>${p}</button>`,
-    );
-  }
-  return `<nav class="pager" aria-label="Result pages">${buttons.join("")}</nav>`;
 }
 
 /**
