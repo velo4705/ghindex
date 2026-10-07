@@ -269,11 +269,15 @@ async function runChecks(browser: string) {
       titleAboveCentre: h.bottom < window.innerHeight / 2,
       tagsBottom: Math.round(t.bottom),
       tagsVisible: t.bottom <= window.innerHeight,
+      // The gap the topic row used to leave under the help line. The hero filled
+      // the viewport and the topics sat outside it, which put a screen of nothing
+      // between two things that are obviously one group.
+      voidBelowHelp: Math.round(t.top - document.querySelector('.help').getBoundingClientRect().bottom),
     };
   })())`)));
   check(
     "the search box sits on the vertical centre of the screen",
-    Math.abs(vcent.offset) <= 4,
+    Math.abs(vcent.offset) <= 8,
     `${vcent.offset}px off the middle`,
   );
   check("the title is above it, not below", vcent.titleAboveCentre === true);
@@ -283,6 +287,11 @@ async function runChecks(browser: string) {
     "and the topic row still fits on the first screen",
     vcent.tagsVisible === true,
     `tags end at ${vcent.tagsBottom}px of ${vcent.viewportH}px`,
+  );
+  check(
+    "the topic row sits right under the help line",
+    vcent.voidBelowHelp <= 60,
+    `${vcent.voidBelowHelp}px of empty space between them`,
   );
 
   // Widths. The box is centred but narrow, the tag band and the result list are

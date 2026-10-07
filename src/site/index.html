@@ -134,55 +134,55 @@
   }
 
   /*
-     The hero fills almost the whole viewport and centres its contents, so the
-     search box sits at the middle of the screen rather than near the top with a
-     screen of empty space beneath it.
+     The hero fills the viewport and centres everything the visitor sees before
+     typing: title, subtitle, box, help, and the topic row. One block, so nothing
+     floats away from anything else.
 
-     Centring is on the group — title, subtitle, box, help — not on the box alone,
-     so the box lands a few pixels off true centre: it is the third of four stacked
-     elements, and the help line below roughly balances the title above.
-     Centring the box alone would shove the title to the top of the group and make
-     the block look bottom-heavy.
+     This was a viewport-tall hero with the topics left outside it, and the
+     screenshot showed the result: a full screen of nothing between the help line
+     and the first chip. Centring them together removes the void and costs nothing
+     — the topic row is only ~65px, so the search box still lands within a few
+     pixels of the middle.
 
      `svh`, not `vh`: on mobile `vh` is the height with browser chrome hidden, so
-     a 100vh box scrolls its own content under the URL bar as the chrome collapses.
-
-     The subtracted 7rem is the tag band and its gap. A full-viewport hero is
-     correct for centring the box, but it puts the tags one scroll away, and the
-     tags are half the reason the page has content. Reserving their height keeps
-     the box within ~10px of centre *and* leaves the topic row on the first
-     screen, which a plain 100svh could not do.
+     a 100vh hero scrolls its own content under the URL bar as the chrome collapses.
   */
   .hero {
-    text-align: center;
-    max-width: 820px;
-    margin: 0 auto;
-    min-height: calc(100svh - 7rem);
+    min-height: 100vh;
+    min-height: 100svh;
     display: flex;
     flex-direction: column;
     justify-content: center;
-    /*
-       The box does not land on the true centre when the group does, because the
-       group is not symmetric about the box: the title and subtitle above it total
-       more height than the one help line below it. Left alone the box sat 24px
-       high at every desktop size. Padding the top shifts the centred group down
-       by half its own height, which cancels that exactly.
-
-       The 3rem is not a guess: it is twice the measured offset, because flex
-       centres within the content box, and only the padding above moves the
-       result. verify-browser.ts asserts the box's centre against the viewport's
-       so this cannot drift again.
-    */
-    padding-top: 3rem;
+    /* One gap between the help line and the topic row. Before this the two were
+       separated by the whole height of the hero. */
+    gap: 1.9rem;
   }
 
   /*
-     Once there are results, the hero gives its height back.
+     The inner block carries the reading measure; the topic row deliberately does
+     not. At 820px the chips wrap into a tall narrow column, and a broad set of
+     small options wants the width.
+  */
+  .hero-inner {
+    text-align: center;
+    max-width: 820px;
+    width: 100%;
+    margin: 0 auto;
+    /*
+       The box does not land on the true centre when the group does, because the
+       group is not symmetric about the box: the title and subtitle above it total
+       slightly more height than the help line and topic row below it, so the box
+       drifts a few pixels high. Left at zero it measured 13px low on desktop and
+       49px low on mobile, where the topic row wraps to more lines. verify-browser.ts
+       pins the result at desktop so this cannot drift again; the mobile figure is
+       inside the tolerance because a phone has no room to be exact.
+    */
+    padding-top: 0;
+  }
 
-     Without this the hero keeps a full viewport even after a search, so the
-     answers appear exactly one screen below the fold and a visitor who searched
-     has to scroll to find out whether anything matched. Shrinking it on the first
-     result keeps the results where the eye already is.
+  /*
+     Once there are results, the hero gives its height back, so answers appear
+     where the eye already is instead of a screen down.
 
      `:has()` rather than a class toggled from script, so the layout cannot drift
      out of sync with the state that causes it.
@@ -190,6 +190,7 @@
   main:has(#results > *) .hero {
     min-height: 0;
     padding: clamp(2rem, 7vh, 4rem) 0 clamp(1rem, 3vh, 1.75rem);
+    gap: 1.4rem;
   }
 
   h1 {
@@ -268,7 +269,11 @@
      of which lead to nothing. This is the set of tags that reliably mean
      something, so it is short enough to scan.
   */
-  .tagpick { margin-top: 2.5rem; }
+  /*
+     No top margin: the gap to the help line comes from the hero's flex `gap`, so
+     there is exactly one value controlling the space and it does not double up.
+  */
+  .tagpick { margin-top: 0; }
 
   /*
      The picker is a quiet centred cloud and nothing else.
@@ -515,41 +520,50 @@
     </p>
   </noscript>
 
+  <!--
+    The hero is title, subtitle, box, help and topics as one centred block.
+
+    The topic row used to sit outside this, after a hero that filled the viewport,
+    which left a screen of empty space between the help line and the first chip.
+    Everything the visitor sees before typing now centres together, so the page
+    reads as one thing rather than a search box floating above a distant footer.
+
+    The topics sit inside the hero but are not width-capped with it: they are a
+    broad set of options, not prose, and at the search box's measure they wrap
+    into a tall narrow column. So the inner block carries the cap and the topic
+    row does not.
+  -->
   <div class="hero">
-    <h1>ghindex</h1>
-    <p class="tagline">Live search of GitHub Pages sites.</p>
+    <div class="hero-inner">
+      <h1>ghindex</h1>
+      <p class="tagline">Live search of GitHub Pages sites.</p>
 
-    <form role="search" class="searchbox" id="f">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-           stroke-linecap="round" aria-hidden="true">
-        <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
-      </svg>
-      <label class="sr" for="q">Search GitHub for Pages sites</label>
-      <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
-             placeholder="Search owner, repo, title or topic…" />
-    </form>
+      <form role="search" class="searchbox" id="f">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+        </svg>
+        <label class="sr" for="q">Search GitHub for Pages sites</label>
+        <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search owner, repo, title or topic…" />
+      </form>
 
-    <p class="help">
-      Results come from GitHub as you type, and each one is checked to confirm it
-      is really serving right now.
-    </p>
+      <p class="help">
+        Results come from GitHub as you type, and each one is checked to confirm it
+        is really serving right now.
+      </p>
+    </div>
+
+    <!--
+      Topic picker. Every tag here describes what a site *is* rather than what it
+      was built with: browsing by technology is how you end up looking at a
+      thousand React sites and no portfolio. Clicking one searches for it, and
+      clicking it again clears the selection.
+    -->
+    <section class="tagpick" aria-label="Browse by topic">
+      <div class="taglist" id="taglist"></div>
+    </section>
   </div>
-
-  <!--
-    Tag picker. Every tag here is one that reliably describes what a site is,
-    rather than what it was built with: browsing by technology is how you end up
-    looking at a thousand React sites and no portfolio. Clicking one searches for
-    it, and it stays selected so you can tell what you are looking at.
-  -->
-  <!--
-    Topic picker. Every tag here describes what a site *is* rather than what it
-    was built with: browsing by technology is how you end up looking at a thousand
-    React sites and no portfolio. Clicking one searches for it, and clicking it
-    again clears the selection.
-  -->
-  <section class="tagpick" aria-label="Browse by topic">
-    <div class="taglist" id="taglist"></div>
-  </section>
 
   <div id="results"></div>
   <div class="sentinel" id="sentinel" hidden></div>

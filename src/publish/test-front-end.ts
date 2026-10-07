@@ -135,8 +135,23 @@ check(
   /aria-expanded="\$\{state\.tagsOpen\}"/.test(app),
 );
 
+// The whole pre-search view is one centred block. The topics used to sit outside
+  // the hero, after a hero that filled the viewport, which left a screen of empty
+  // space between the help line and the first chip — two things that are obviously
+  // one group, split apart by most of a page.
+check("the topic picker is inside the hero", /\.hero[\s\S]*class="tagpick"[\s\S]*<\/div>\s*<\/main>/.test(html));
+check(
+  "and the hero centres as one unit",
+  /\.hero\s*\{[^}]*flex-direction:\s*column[^}]*justify-content:\s*center/.test(html),
+);
+check(
+  "with a single gap between the help line and the topics",
+  /\.hero\s*\{[^}]*gap:/.test(html) && !/\.tagpick\s*\{\s*margin-top:\s*2/.test(html),
+  "a margin-top on the picker would double the hero's gap",
+);
+
 // An uppercase letterspaced "BROWSE BY TOPIC" heading shipped and was removed:
-  // a dated label for a control the reader did not ask about.
+// a dated label for a control the reader did not ask about.
 check("the picker carries no heading", !/<h2[^>]*>\s*Browse/i.test(html));
 
 // The copy has to be honest. "every" was a claim the API cannot support: search
