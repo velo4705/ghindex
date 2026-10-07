@@ -269,10 +269,15 @@ async function runChecks(browser: string) {
       titleAboveCentre: h.bottom < window.innerHeight / 2,
       tagsBottom: Math.round(t.bottom),
       tagsVisible: t.bottom <= window.innerHeight,
-      // The gap the topic row used to leave under the help line. The hero filled
-      // the viewport and the topics sat outside it, which put a screen of nothing
-      // between two things that are obviously one group.
-      voidBelowHelp: Math.round(t.top - document.querySelector('.help').getBoundingClientRect().bottom),
+      // The help line sits *below* the topics, as the last line of the centred block.
+// It used to sit directly under the box, which meant reading order was box ->
+// help -> topics, and the topics had to be reached past the help before the
+// alternative to typing was visible.
+// The gap between the topics and the help line that follows them.
+      gapHelp: Math.round(document.querySelector('.help').getBoundingClientRect().top - t.bottom),
+      helpBelowTags: document.querySelector('.help').getBoundingClientRect().top >= t.bottom - 1,
+      helpBottom: Math.round(document.querySelector('.help').getBoundingClientRect().bottom),
+      helpVisible: document.querySelector('.help').getBoundingClientRect().bottom <= window.innerHeight,
     };
   })())`)));
   check(
@@ -281,17 +286,28 @@ async function runChecks(browser: string) {
     `${vcent.offset}px off the middle`,
   );
   check("the title is above it, not below", vcent.titleAboveCentre === true);
-  // Reserving the tag band's height is what keeps the box centred without hiding
-  // the topics a screen down. A plain 100svh hero centres the box and buries them.
+  // Everything the visitor sees before typing has to fit on one screen. It did
+  // not for a while: the topics were left outside the hero and the help line came
+  // after them, so each was pushed down in turn.
   check(
     "and the topic row still fits on the first screen",
     vcent.tagsVisible === true,
     `tags end at ${vcent.tagsBottom}px of ${vcent.viewportH}px`,
   );
   check(
-    "the topic row sits right under the help line",
-    vcent.voidBelowHelp <= 60,
-    `${vcent.voidBelowHelp}px of empty space between them`,
+    "the help line comes after the topics",
+    vcent.helpBelowTags === true,
+    "reading order is box -> help -> topics, and the alternative to typing is below the explanation",
+  );
+  check(
+    "and the help line is on the first screen too",
+    vcent.helpVisible === true,
+    `help ends at ${vcent.helpBottom}px of ${vcent.viewportH}px`,
+  );
+  check(
+    "and follows the topics closely",
+    vcent.gapHelp <= 60,
+    `${vcent.gapHelp}px between the topics and the help line`,
   );
 
   // Widths. The box is centred but narrow, the tag band and the result list are

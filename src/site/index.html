@@ -254,10 +254,11 @@
      AA threshold for text this size.
   */
   .help {
-    margin: .9rem auto 0;
+    margin: 0 auto;
     max-width: 44ch;
     color: var(--fg-muted);
     font-size: .84rem;
+    text-align: center;
   }
 
   /* ---------------------------------------------------------- tag picker */
@@ -547,11 +548,6 @@
         <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
                placeholder="Search owner, repo, title or topic…" />
       </form>
-
-      <p class="help">
-        Results come from GitHub as you type, and each one is checked to confirm it
-        is really serving right now.
-      </p>
     </div>
 
     <!--
@@ -563,6 +559,11 @@
     <section class="tagpick" aria-label="Browse by topic">
       <div class="taglist" id="taglist"></div>
     </section>
+
+    <p class="help">
+      Results come from GitHub as you type, and each one is checked to confirm it
+      is really serving right now.
+    </p>
   </div>
 
   <div id="results"></div>

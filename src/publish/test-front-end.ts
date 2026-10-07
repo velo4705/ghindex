@@ -139,7 +139,18 @@ check(
   // the hero, after a hero that filled the viewport, which left a screen of empty
   // space between the help line and the first chip — two things that are obviously
   // one group, split apart by most of a page.
-check("the topic picker is inside the hero", /\.hero[\s\S]*class="tagpick"[\s\S]*<\/div>\s*<\/main>/.test(html));
+// Reading order inside the hero: title, subtitle, box, topics, help. The help
+  // line came between the box and the topics for a while, which put the
+  // alternative to typing below the explanation of how the box works.
+check(
+  "the topics come before the help line",
+  html.indexOf('class="tagpick"') < html.indexOf('class="help"'),
+  "help should be the last line of the centred block",
+);
+check(
+  "the help line is inside the hero",
+  /\.hero[\s\S]*class="tagpick"[\s\S]*class="help"[\s\S]*<\/main>/.test(html),
+);
 check(
   "and the hero centres as one unit",
   /\.hero\s*\{[^}]*flex-direction:\s*column[^}]*justify-content:\s*center/.test(html),
