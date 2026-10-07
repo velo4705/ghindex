@@ -130,7 +130,10 @@
   main {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 0 clamp(1.25rem, 4vw, 3rem) 4rem;
+    /* No bottom padding: with the help line as the last element, padding here
+       would push it off the bottom and make the page scroll before the visitor
+       has done anything. The hero's own gap provides all the breathing room. */
+    padding: 0 clamp(1.25rem, 4vw, 3rem);
   }
 
   /*
@@ -244,20 +247,19 @@
   input[type=search]::-webkit-search-cancel-button { cursor: pointer; }
 
   /*
-     One line of help, under the box. It says the two things a visitor cannot
-     guess: that results arrive as they type rather than on submit, and that
-     what comes back is live rather than a stored index. Both are true and both
-     change what the page is, so neither is decoration.
+     The help line: the closing sentence about what this is and where the results
+     come from. Last in the centred block, directly under the topics.
 
-     --fg-muted rather than --fg-subtle: at 0.82rem this is body text, and
-     --fg-subtle only reaches ~3.4:1 on the light background, which is below the
-     AA threshold for text this size.
+     Quiet by design — it is a footnote, not a call to action — but `--fg-muted`
+     rather than `--fg-subtle`, because at 0.78rem this is text a reader is
+     expected to be able to read.
   */
-  .help {
+  .helpline {
     margin: 0 auto;
-    max-width: 44ch;
+    max-width: 58ch;
     color: var(--fg-muted);
-    font-size: .84rem;
+    font-size: .78rem;
+    line-height: 1.5;
     text-align: center;
   }
 
@@ -491,15 +493,8 @@
   }
   [hidden] { display: none !important; }
 
-  footer {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem clamp(1.25rem, 4vw, 3rem) 3rem;
-    border-top: 1px solid var(--border-soft);
-    color: var(--fg-subtle);
-    font-size: .75rem;
-    text-align: center;
-  }
+  /* The help line is the last element in the document flow before the results,
+     so nothing sits below it on arrival and the page does not scroll. */
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -560,20 +555,28 @@
       <div class="taglist" id="taglist"></div>
     </section>
 
-    <p class="help">
-      Results come from GitHub as you type, and each one is checked to confirm it
-      is really serving right now.
+    <!--
+      The help line: the closing sentence about what this is and where the data
+      comes from. It is the last line of the centred block, so it sits directly
+      under the topics and the whole pre-search view fits one screen with no
+      scrolling.
+
+      It was a separate <footer> pinned to the bottom of the document, which meant
+      the page was always taller than the viewport: a visitor who scrolled found
+      a second half with a sentence and a rule in it, and had to work out whether
+      it was part of the page or a stray artifact. There is now nowhere to scroll
+      to before results appear.
+    -->
+
+    <p class="helpline">
+      ghindex is an independent project and is not affiliated with GitHub. Results
+      come straight from GitHub and are link-checked as they load.
     </p>
   </div>
 
   <div id="results"></div>
   <div class="sentinel" id="sentinel" hidden></div>
 </main>
-
-<footer>
-  ghindex is an independent project and is not affiliated with GitHub. Results
-  come straight from GitHub and are link-checked as they load.
-</footer>
 
 <script type="module" src="./app.js"></script>
 </body>

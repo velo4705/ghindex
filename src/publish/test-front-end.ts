@@ -37,6 +37,17 @@ const check = (name: string, ok: boolean, detail = "") => {
 };
 
 const html = readFileSync(join(SITE, "index.html"), "utf8");
+
+/**
+ * The markup with comments removed.
+ *
+ * The CSS block documents the layouts that were tried and rejected, and the body
+ * documents the removed footer — in prose that quotes the very markup being
+ * asserted absent. Matching on the comments would forbid the explanation of why
+ * the code looks like this.
+ */
+const stripHtmlComments = (s: string) => s.replace(/<!--[\s\S]*?-->/g, "");
+const markup = stripHtmlComments(html);
 const app = readFileSync(join(SITE, "app.js"), "utf8");
 
 // ------------------------------------------------------------- no index
@@ -92,7 +103,7 @@ check("there is a search box", /<input id="q"[^>]*type="search"/.test(html));
 
 // One line of help, because "results appear as you type" is not obvious and a
 // visitor who waits for a submit button will think it is broken.
-check("there is a help line", /class="help"/.test(html));
+check("there is a help line", /class="helpline"/.test(html));
 
 // Nothing else. These were all real features that are now gone, and each one
 // coming back would put the chrome back between the visitor and the box.
@@ -139,26 +150,40 @@ check(
   // the hero, after a hero that filled the viewport, which left a screen of empty
   // space between the help line and the first chip — two things that are obviously
   // one group, split apart by most of a page.
-// Reading order inside the hero: title, subtitle, box, topics, help. The help
-  // line came between the box and the topics for a while, which put the
-  // alternative to typing below the explanation of how the box works.
+// Reading order inside the hero: title, subtitle, box, topics, help line. The
+// alternative to typing used to sit below an explanatory sentence, and the help
+// line itself was a separate footer a screen further down.
 check(
   "the topics come before the help line",
-  html.indexOf('class="tagpick"') < html.indexOf('class="help"'),
+  markup.indexOf('class="tagpick"') < markup.indexOf('class="helpline"'),
   "help should be the last line of the centred block",
 );
 check(
   "the help line is inside the hero",
-  /\.hero[\s\S]*class="tagpick"[\s\S]*class="help"[\s\S]*<\/main>/.test(html),
+  /.hero[\s\S]*class="tagpick"[\s\S]*class="helpline"[\s\S]*<\/main>/.test(markup),
 );
 check(
   "and the hero centres as one unit",
   /\.hero\s*\{[^}]*flex-direction:\s*column[^}]*justify-content:\s*center/.test(html),
 );
 check(
-  "with a single gap between the help line and the topics",
+  "with a single gap between its parts",
   /\.hero\s*\{[^}]*gap:/.test(html) && !/\.tagpick\s*\{\s*margin-top:\s*2/.test(html),
   "a margin-top on the picker would double the hero's gap",
+);
+check(
+  "and the hero centres as one unit",
+  /\.hero\s*\{[^}]*flex-direction:\s*column[^}]*justify-content:\s*center/.test(html),
+);
+// The help line is the last element in the document, so there is nothing below
+  // the fold before a search runs. It was a separate <footer>, which made the page
+  // permanently taller than the viewport and gave a scrolling visitor a second
+  // half to interpret.
+check("the help line is the last element", /<\/div>\s*<\/main>/.test(markup) && !/<footer/.test(markup));
+check("there is no separate footer", !/<footer/.test(markup) && !/\bfooter\s*\{/.test(markup));
+check(
+  "and the page has no bottom padding pushing it off",
+  !/main\s*\{[^}]*padding:[^;}]*\d+rem\s*\}/.test(markup),
 );
 
 // An uppercase letterspaced "BROWSE BY TOPIC" heading shipped and was removed:

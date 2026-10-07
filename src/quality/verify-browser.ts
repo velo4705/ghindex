@@ -238,7 +238,7 @@ async function runChecks(browser: string) {
     return JSON.stringify({
       rows: document.querySelectorAll('#results .row').length,
       resultsText: document.getElementById('results').textContent.trim(),
-      help: (document.querySelector('.help') || {}).textContent || '',
+      helpline: (document.querySelector('.helpline') || {}).textContent || '',
       h1: (document.querySelector('h1') || {}).textContent || '',
       tagline: (document.querySelector('.tagline') || {}).textContent || '',
       searchOffset: Math.round(Math.abs(mid(box) - mid(hero))),
@@ -251,7 +251,7 @@ async function runChecks(browser: string) {
   const a = JSON.parse(String(arrival));
   check("a title is shown", (a.h1 || "").length > 0, a.h1);
   check("a subtitle is shown", (a.tagline || "").length > 0, a.tagline);
-  check("a help line is shown", /GitHub/.test(a.help || ""), (a.help || "").slice(0, 60));
+  check("a help line is shown", /GitHub/.test(a.helpline || ""), (a.helpline || "").slice(0, 60));
   check("the search box is centred under the hero", a.searchOffset <= 2, `${a.searchOffset}px off centre`);
   check("the hero is centred on the page", a.heroOffset <= 2, `${a.heroOffset}px off centre`);
 
@@ -263,21 +263,23 @@ async function runChecks(browser: string) {
     const b = document.querySelector('.searchbox').getBoundingClientRect();
     const t = document.getElementById('taglist').getBoundingClientRect();
     const h = document.querySelector('h1').getBoundingClientRect();
+    const hp = document.querySelector('.helpline').getBoundingClientRect();
     return {
       viewportH: window.innerHeight,
       offset: Math.round((b.top + b.height / 2) - window.innerHeight / 2),
       titleAboveCentre: h.bottom < window.innerHeight / 2,
       tagsBottom: Math.round(t.bottom),
       tagsVisible: t.bottom <= window.innerHeight,
-      // The help line sits *below* the topics, as the last line of the centred block.
-// It used to sit directly under the box, which meant reading order was box ->
-// help -> topics, and the topics had to be reached past the help before the
-// alternative to typing was visible.
-// The gap between the topics and the help line that follows them.
-      gapHelp: Math.round(document.querySelector('.help').getBoundingClientRect().top - t.bottom),
-      helpBelowTags: document.querySelector('.help').getBoundingClientRect().top >= t.bottom - 1,
-      helpBottom: Math.round(document.querySelector('.help').getBoundingClientRect().bottom),
-      helpVisible: document.querySelector('.help').getBoundingClientRect().bottom <= window.innerHeight,
+      // The help line is the last line of the centred block, so it sits below
+      // the topics and nothing follows it. It was a separate <footer> pinned to
+      // the bottom of the document, which left the page taller than the viewport
+      // and gave a scrolling visitor a second half they had to interpret.
+      gapHelp: Math.round(hp.top - t.bottom),
+      helplineBelowTags: hp.top >= t.bottom - 1,
+      helplineBottom: Math.round(hp.bottom),
+      helplineVisible: hp.bottom <= window.innerHeight,
+      // Nothing may extend past the fold before a search runs.
+      scrolls: document.documentElement.scrollHeight > window.innerHeight,
     };
   })())`)));
   check(
@@ -296,18 +298,25 @@ async function runChecks(browser: string) {
   );
   check(
     "the help line comes after the topics",
-    vcent.helpBelowTags === true,
+    vcent.helplineBelowTags === true,
     "reading order is box -> help -> topics, and the alternative to typing is below the explanation",
   );
   check(
     "and the help line is on the first screen too",
-    vcent.helpVisible === true,
-    `help ends at ${vcent.helpBottom}px of ${vcent.viewportH}px`,
+    vcent.helplineVisible === true,
+    `help ends at ${vcent.helplineBottom}px of ${vcent.viewportH}px`,
   );
   check(
     "and follows the topics closely",
     vcent.gapHelp <= 60,
     `${vcent.gapHelp}px between the topics and the help line`,
+  );
+  // The whole point: on arrival there is nothing to scroll to. A second half
+  // below the fold read as part of the page and had to be interpreted.
+  check(
+    "and the page does not scroll before a search",
+    vcent.scrolls === false,
+    `scrollHeight ${await evalJs(`document.documentElement.scrollHeight`)} > viewport ${vcent.viewportH}`,
   );
 
   // Widths. The box is centred but narrow, the tag band and the result list are
