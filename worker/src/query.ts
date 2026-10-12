@@ -22,6 +22,17 @@ export function normalizeQuery(raw: string): string {
     .toLowerCase();
 }
 
+/**
+ * Result ordering: GitHub's own relevance ranking, or most stars first.
+ *
+ * Anything unrecognised becomes "best" rather than being passed through. This
+ * value ends up in an outbound URL and in a cache key, so it is reduced to one
+ * of two known strings here and nowhere else.
+ */
+export function normalizeSort(raw: string): "best" | "stars" {
+  return String(raw ?? "").trim().toLowerCase() === "stars" ? "stars" : "best";
+}
+
 /** Clamp a page number into the range GitHub will actually serve. */
 export function clampPage(raw: string | null): number {
   const n = Number.parseInt(String(raw ?? "1"), 10);
@@ -51,6 +62,10 @@ export function searchCacheKey(url: URL): string {
   u.searchParams.set("q", normalizeQuery(url.searchParams.get("q")));
   u.searchParams.set("page", String(clampPage(url.searchParams.get("page"))));
   u.searchParams.set("per_page", String(clampPerPage(url.searchParams.get("per_page"))));
+  // Ordering is part of the identity of a result set. Leaving it out let "most
+  // stars" serve a cached "best match" page and vice versa: same query, same page
+  // number, a different order, and no way for the reader to tell.
+  u.searchParams.set("sort", normalizeSort(url.searchParams.get("sort")));
   return u.toString();
 }
 

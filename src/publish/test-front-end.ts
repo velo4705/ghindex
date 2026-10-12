@@ -246,6 +246,30 @@ for (const f of ["app.js", "github-search.js", "taxonomy.js"]) {
   check(`${f} parses as plain JavaScript`, ok, err);
 }
 
+// --- ordering --------------------------------------------------------------
+//
+// Pinned against the URL builder rather than the browser, because the browser
+// test runs against the *deployed* worker, which keeps serving its old hard-coded
+// star-sort until this change ships. These assert the contract the worker will be
+// asked for once it does.
+
+const { pageUrlForTest } = (await import(
+  join(SITE, "github-search.js")
+)) as { pageUrlForTest: (input: string, page: number, edge: string | null, sort: string) => string };
+
+const direct = (sort: string) => pageUrlForTest("portfolio", 2, null, sort);
+const edgeUrl = (sort: string) => pageUrlForTest("portfolio", 2, "https://edge.test", sort);
+
+check("relevance sends no sort qualifier", !direct("best").includes("sort="), direct("best"));
+check("most stars sends the stars qualifier",
+  direct("stars").includes("sort=stars&order=desc"), direct("stars"));
+check("the two orderings are different requests", direct("best") !== direct("stars"));
+check("relevance reaches the edge worker as no sort", !edgeUrl("best").includes("sort="), edgeUrl("best"));
+check("most stars reaches the edge worker as sort=stars",
+  edgeUrl("stars").includes("sort=stars"), edgeUrl("stars"));
+check("page and per_page survive either ordering",
+  direct("best").includes("page=2") && direct("stars").includes("page=2"));
+
 console.log(
   fail === 0 ? `\nFRONT END OK (${checks} checks)` : `\n${fail} FRONT END CHECK(S) FAILED`,
 );

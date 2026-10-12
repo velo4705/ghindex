@@ -57,6 +57,8 @@ const TAGS_COLLAPSED = 11;
 const state = {
   rows: [],
   total: 0,
+  /** "best" (GitHub relevance) or "stars" (most stars first). */
+  sort: "best",
   /** Which page of results is on screen, 1-based. */
   page: 1,
   /** The page being fetched, or 0 when nothing is in flight. */
@@ -108,6 +110,74 @@ function safeUrl(u) {
 // ---------------------------------------------------------------- search
 
 /**
+ * The result-order control.
+ *
+ * Only shown once there is a query: an ordering control above an empty page is a
+ * control for something that does not exist yet.
+ *
+ * Deliberately two options. GitHub offers "most forks", "most recently updated"
+ * and "most issues" as well, and this site cannot honour those the same way — a
+ * Pages site has no meaningful fork count or issue count — so offering them would
+ * be offering buttons that sort by a field nothing on the page displays.
+ */
+function renderSortbar() {
+  const host = $("sortbar");
+  if (!host) return;
+  if (!state.hasQuery) {
+    host.innerHTML = "";
+    return;
+  }
+  const option = (value, label) =>
+    `<button type="button" class="sortbtn" data-sort="${value}"` +
+    ` aria-pressed="${state.sort === value}">${label}</button>`;
+  host.innerHTML =
+    option("best", "Best match") + option("stars", "Most stars");
+}
+
+/**
+ * The selected topic, as a removable chip inside the search field.
+ *
+ * A topic filter used to be visible only as a highlighted button in the picker
+ * below the field. That is easy to lose: the search bar still showed its
+ * placeholder, so the field looked idle while results came from somewhere else.
+ * A reader who then typed a query had no idea why the topic had been dropped.
+ *
+ * Showing it where the query is typed makes the filter part of the query, and
+ * gives it a way out that does not require hunting for the original button.
+ * The button itself carries an accessible name, because "×" alone tells a screen
+ * reader nothing about what it removes.
+ */
+function renderSearchChip() {
+  const host = $("searchchips");
+  if (!host) return;
+  if (!state.tag) {
+    host.innerHTML = "";
+    return;
+  }
+  host.innerHTML =
+    `<span class="searchchip">` +
+    `<span class="searchchip-label">${esc(state.tag)}</span>` +
+    `<button type="button" class="searchchip-x" aria-label="Remove the ${esc(state.tag)} topic filter"` +
+    ` title="Remove the ${esc(state.tag)} topic filter">×</button>` +
+    `</span>`;
+}
+
+/**
+ * Drop the topic filter and search again with whatever text is in the field.
+ *
+ * Focus is returned to the input because the button that was just pressed is
+ * about to be removed from the DOM; leaving focus on a removed element drops it
+ * to the document body and the next keystroke goes nowhere.
+ */
+function clearTag() {
+  state.tag = "";
+  renderSearchChip();
+  renderTagPicker();
+  $("q").focus();
+  runSearch({ fresh: true });
+}
+
+/**
  * Run a query against GitHub through the edge worker.
  *
  * One API page per call. Paging fetches only the page being shown, so turning to
@@ -133,6 +203,7 @@ async function runSearch(opts = {}) {
   // silently keeping the tag would ignore what they just typed.
   if (raw && state.tag) {
     state.tag = "";
+    renderSearchChip();
     renderTagPicker();
   }
   if (!raw && !state.tag) {
@@ -143,14 +214,14 @@ async function runSearch(opts = {}) {
 
   // A different query starts at page 1. Keeping the old page number would show
   // page 7 of a query the reader had not seen page 1 of.
-  const fresh = opts.fresh || state.lastQuery !== q;
+  const fresh = opts.fresh || state.lastQuery !== q || opts.sortChanged === true;
   const page = fresh ? 1 : opts.page;
   if (!fresh && !page) return;
 
-  // Whether the list on screen can stay while this loads. A new query has no
-  // results to keep; a page change does, and replacing them with a loading
-  // message throws away what the reader was reading.
-  const keepResults = !fresh && state.rows.length > 0;
+  // Whether this is turning a page rather than running a new query. A page turn
+  // names the page it is fetching, so the reader can see which of ten they asked
+  // for.
+  const pageTurn = !fresh && !!opts.page;
 
   state.inflight?.abort();
   const ctrl = new AbortController();
@@ -158,19 +229,25 @@ async function runSearch(opts = {}) {
   state.loading = true;
   state.hasQuery = true;
   state.pendingPage = page;
+  renderSortbar();
   if (fresh) {
     state.error = null;
     state.partial = null;
   }
 
-  if (keepResults) {
-    // Only the pager changes: same rows, same scroll position, with the control
-    // showing the fetch in progress.
-    renderPager();
-    $("results").setAttribute("aria-busy", "true");
-  } else {
-    renderResults(fresh ? "Searching GitHub…" : null);
-  }
+  // The list is replaced rather than held. Leaving the previous page's rows on
+  // screen under a pager showing a different page is the confusing option: the
+  // results and the control disagree about what is being shown. Taking the list
+  // away and naming the page being fetched — as a search engine does — leaves no
+  // ambiguity about what is on screen. The page control stays, so a reader who
+  // realises they chose wrong can click another number instead of waiting.
+  state.rows = [];
+  state.rendered = 0;
+  $("results").setAttribute("aria-busy", "true");
+  renderResults(
+    pageTurn ? `Loading page ${page}…` : "Searching GitHub…",
+    pageTurn,
+  );
 
   const { searchGitHub } = await import("./github-search.js");
 
@@ -186,7 +263,7 @@ async function runSearch(opts = {}) {
    */
   let res;
   try {
-    res = await searchGitHub(q, { signal: ctrl.signal, page });
+    res = await searchGitHub(q, { signal: ctrl.signal, page, sort: state.sort });
   } catch (err) {
     if (err && err.name === "AbortError") {
       state.inflight = null;
@@ -242,6 +319,7 @@ function resetSearch() {
   state.partial = null;
   state.error = null;
   state.hasQuery = false;
+  renderSortbar();
 }
 
 // ---------------------------------------------------------------- tag picker
@@ -301,8 +379,19 @@ $("taglist").addEventListener("click", (e) => {
   if (!btn) return;
   const tag = btn.dataset.tag;
   state.tag = state.tag === tag ? "" : tag;
+  renderSearchChip();
   renderTagPicker();
   runSearch({ fresh: true });
+});
+
+/**
+ * The chip's own remove button.
+ *
+ * It lives outside the tag picker's container, so it cannot be handled by the
+ * handler above, and it has to work while the picker is scrolled out of view.
+ */
+$("searchchips").addEventListener("click", (e) => {
+  if (e.target.closest(".searchchip-x")) clearTag();
 });
 
 // ---------------------------------------------------------------- liveness
@@ -453,15 +542,17 @@ const el = $("results");
  * The page control, redrawn on its own.
  *
  * It lives in its own container rather than being part of the results markup so
- * that a pending page change can update just this. Rewriting the whole results
- * container to show a loading state would throw away the list the reader is
- * currently looking at and put them back at the top of an empty page.
+ * that a pending page change can update just this, without the row list.
  *
- * While a page is in flight the control stays put and shows what it is doing.
- * That is the buffer: the results already on screen remain readable, the buttons
- * grey out so they cannot be double-charged, and the label names the page being
- * fetched. Clicking several numbers in a row aborts the earlier fetches and
- * leaves the last one standing.
+ * While a page is in flight the control stays clickable and the requested number
+ * is ringed. Disabling the buttons was the wrong instinct: the common case is
+ * clicking through several numbers because you landed on the wrong page, and a
+ * control that greys out after one click makes that impossible. Each click
+ * aborts the previous request and issues a new one, so only the last survives and
+ * only the last is paid for.
+ *
+ * There is no text label here: the results area beside it already says which
+ * page is loading, and saying it twice is noise.
  */
 function renderPager() {
   const host = $("pager");
@@ -486,20 +577,9 @@ function renderPager() {
     );
   }
 
-  // The buttons stay clickable while a page loads. Disabling them was the wrong
-  // instinct: the common case is clicking through several numbers because you
-  // landed on the wrong page, and a control that greys out after one click makes
-  // that impossible. Each click aborts the previous request and issues a new one,
-  // so only the last survives and only the last is paid for.
-  const status = busy && state.pendingPage && state.pendingPage !== state.page
-    ? `<span class="pagestatus">Loading page ${state.pendingPage}…</span>`
-    : busy
-      ? `<span class="pagestatus">Loading…</span>`
-      : "";
-
   host.innerHTML =
     `<nav class="pager" aria-label="Result pages"${busy ? ' aria-busy="true"' : ""}>` +
-    `${status}${buttons.join("")}</nav>`;
+    `${buttons.join("")}</nav>`;
 }
 
 /**
@@ -541,11 +621,18 @@ function summaryHtml() {
  *
  * `statusText` covers the in-flight state so the page shows progress rather than
  * the previous query's answer.
+ *
+ * `keepPager` keeps the page control on screen during a page turn. Without it a
+ * reader who clicks the wrong number has to wait out the fetch before they can
+ * correct it, which is the one moment the control is most useful.
  */
-function renderResults(statusText) {
+function renderResults(statusText, keepPager = false) {
   const el = $("results");
   if (statusText) {
-    el.innerHTML = `<div class="empty">${esc(statusText)}</div>`;
+    el.innerHTML =
+      `<div class="empty">${esc(statusText)}</div>` +
+      (keepPager ? `<div id="pager"></div>` : "");
+    if (keepPager) renderPager();
     return;
   }
   if (state.error) {
@@ -599,6 +686,24 @@ document.addEventListener("click", (e) => {
   if (!page || page === state.page) return;
   window.scrollTo({ top: 0, behavior: "auto" });
   runSearch({ page });
+});
+
+/**
+ * Result ordering.
+ *
+ * Switching always restarts at page 1: page 4 of "most stars" is not page 4 of
+ * "best match", and landing on the new ordering's page 4 because you happened to
+ * be reading page 4 would be meaningless.
+ */
+$("sortbar").addEventListener("click", (e) => {
+  const btn = e.target.closest(".sortbtn");
+  if (!btn) return;
+  const sort = btn.dataset.sort;
+  if (!sort || sort === state.sort) return;
+  state.sort = sort;
+  renderSortbar();
+  window.scrollTo({ top: 0, behavior: "auto" });
+  runSearch({ fresh: true, sortChanged: true });
 });
 
 // ---------------------------------------------------------------- boot

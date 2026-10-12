@@ -132,8 +132,23 @@
     margin: 0 auto;
     /* No bottom padding: with the help line as the last element, padding here
        would push it off the bottom and make the page scroll before the visitor
-       has done anything. The hero's own gap provides all the breathing room. */
+       has done anything. The hero's own gap provides all the breathing room.
+       Once there are results, `main:has(#results > *)` below adds some back. */
     padding: 0 clamp(1.25rem, 4vw, 3rem);
+  }
+
+  /*
+     Bottom breathing room, but only after a search has happened.
+
+     The pager was landing flush against the viewport edge, so the last row of
+     controls had nothing under it and the page looked cut off mid-screenshot.
+     Scoped to the results state with the same `:has()` used for the hero, so the
+     pre-search view still fits one screen and still does not scroll — adding
+     padding unconditionally would break that, which is why this is not simply
+     `main { padding-bottom: … }`.
+  */
+  main:has(#results > *) {
+    padding-bottom: clamp(2.5rem, 8vh, 5rem);
   }
 
   /*
@@ -214,7 +229,34 @@
 
   .searchbox { position: relative; margin-top: 2rem; }
 
-  .searchbox svg {
+  /*
+     The border lives on a wrapper rather than the input, so a topic chip can sit
+     inside the field beside the text. With the border on the input itself there
+     is nowhere to put a chip that still looks like part of the field.
+     `focus-within` keeps the ring when the chip's remove button takes focus, so
+     tabbing to the chip does not make the field look unfocused.
+  */
+  .searchfield {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    padding: .5rem .95rem .5rem 2.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    transition: border-color var(--fast), box-shadow var(--fast);
+  }
+  .searchfield:hover {
+    border-color: color-mix(in srgb, var(--border) 60%, var(--fg-subtle));
+  }
+  .searchfield:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+
+  .searchfield svg {
     position: absolute;
     left: 1rem; top: 50%;
     translate: 0 -50%;
@@ -223,27 +265,69 @@
     pointer-events: none;
   }
 
+  /* The active topic, rendered like a GitHub topic chip. */
+  .searchchips { display: contents; }
+
+  .searchchip {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    flex: 0 0 auto;
+    max-width: 100%;
+    padding: .18rem .3rem .18rem .55rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    font-size: .92rem;
+    line-height: 1.5;
+    white-space: nowrap;
+    animation: chipin var(--fast) ease-out;
+  }
+
+  @keyframes chipin { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
+
+  .searchchip-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The remove affordance. Sized to the 44px touch target minimum by padding
+     while the glyph itself stays small, so the chip keeps a compact height. */
+  .searchchip-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.55rem; height: 1.55rem;
+    margin-right: -.15rem;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--fast);
+  }
+  .searchchip-x:hover {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+
   input[type=search] {
-    width: 100%;
-    padding: .95rem 1rem .95rem 2.9rem;
+    flex: 1 1 auto;
+    /* The chip can be long, so the field must be allowed to shrink rather than
+       pushing the input out of the box on a narrow screen. */
+    min-width: 0;
+    padding: .45rem 0;
     font: inherit;
     font-size: 1.05rem;
     color: var(--fg);
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow-sm);
-    transition: border-color var(--fast), box-shadow var(--fast);
+    background: transparent;
+    border: 0;
   }
   input[type=search]::placeholder { color: var(--fg-subtle); }
-  input[type=search]:hover {
-    border-color: color-mix(in srgb, var(--border) 60%, var(--fg-subtle));
-  }
-  input[type=search]:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-  }
+  input[type=search]:focus { outline: none; }
   input[type=search]::-webkit-search-cancel-button { cursor: pointer; }
 
   /*
@@ -345,6 +429,37 @@
 
   /* ---------------------------------------------------------- results */
 
+  /* Sort control. Two options, no more: GitHub offers several others, but each
+     one this site cannot honour would be a button that lies. Relevance is marked
+     pressed so the default is visible rather than merely implied. */
+  .sortbar {
+    display: flex;
+    justify-content: center;
+    gap: .3rem;
+    margin-top: 2.5rem;
+    margin-bottom: .9rem;
+  }
+  .sortbar:not(:has(.sortbtn)) { display: none; }
+
+  .sortbtn {
+    padding: .28rem .7rem;
+    font: inherit;
+    font-size: .82rem;
+    color: var(--fg-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: color var(--fast), border-color var(--fast), background var(--fast);
+  }
+  .sortbtn:hover { color: var(--fg); }
+  .sortbtn[aria-pressed="true"] {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    font-weight: 600;
+  }
+
   /*
      Results start below the fold on a short viewport and are full width of the
      column. They are the reason the page exists, so once there are some they
@@ -401,22 +516,174 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
   }
 
+  /* Buttons stay clickable while loading: a reader who clicked the wrong
+     number can correct it without waiting out the fetch. */
+  .pagebtn.pending + .pagebtn,
+  .pagebtn.pending:hover { border-color: var(--accent); }
+
+  input[type=search] {
+    flex: 1 1 auto;
+    /* The chip can be long, so the field must be allowed to shrink rather than
+       pushing the input out of the box on a narrow screen. */
+    min-width: 0;
+    padding: .45rem 0;
+    font: inherit;
+    font-size: 1.05rem;
+    color: var(--fg);
+    background: transparent;
+    border: 0;
+  }
+  input[type=search]::placeholder { color: var(--fg-subtle); }
+  input[type=search]:focus { outline: none; }
+  input[type=search]::-webkit-search-cancel-button { cursor: pointer; }
+
+  /*
+     The help line: the closing sentence about what this is and where the results
+     come from. Last in the centred block, directly under the topics.
+
+     Quiet by design — it is a footnote, not a call to action — but `--fg-muted`
+     rather than `--fg-subtle`, because at 0.78rem this is text a reader is
+     expected to be able to read.
+  */
+  .helpline {
+    margin: 0 auto;
+    max-width: 58ch;
+    color: var(--fg-muted);
+    font-size: .78rem;
+    line-height: 1.5;
+    text-align: center;
+  }
+
+  /* ---------------------------------------------------------- tag picker */
+
+  /*
+     Tags, for someone who would rather browse than type. A curated list rather
+     than every tag GitHub has, because GitHub has 11,677 distinct ones and 72%
+     of those appear exactly once: a complete list would be 11,677 buttons, most
+     of which lead to nothing. This is the set of tags that reliably mean
+     something, so it is short enough to scan.
+  */
+  /*
+     No top margin: the gap to the help line comes from the hero's flex `gap`, so
+     there is exactly one value controlling the space and it does not double up.
+  */
+  .tagpick { margin-top: 0; }
+
+  /*
+     The picker is a quiet centred cloud and nothing else.
+
+     Three earlier shapes were wrong and each was caught by looking at the
+     rendered page rather than by a failing test:
+
+     - an uppercase letterspaced "BROWSE BY TOPIC" heading: a dated label that
+       announced a control the reader had not asked about, and "browse" was never
+       accurate since picking a chip is one query, not a walk through results;
+     - full-weight chips, which made the picker the loudest thing on a page whose
+       actual subject is the search box;
+     - collapsing the list to one line behind an "all 83" control, which truncated
+       mid-row and read as a rendering fault rather than a choice.
+
+     So: no heading, no truncation, and low-contrast chips that hold the eye at
+     the search box. Height is not the problem it was with large chips — small
+     ones wrap into a block that reads as deliberate.
+  */
+  .taglist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .25rem .3rem;
+    justify-content: center;
+  }
+
+  .tagbtn {
+    padding: .15rem .5rem;
+    font: inherit;
+    font-size: .74rem;
+    line-height: 1.5;
+    color: var(--fg-muted);
+    background: transparent;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--r-full);
+    cursor: pointer;
+    transition: color var(--fast), border-color var(--fast), background var(--fast);
+  }
+  .tagbtn:hover {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--border) 45%, var(--accent));
+    background: var(--accent-soft);
+  }
+  .tagbtn[aria-pressed=true] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+    font-weight: 600;
+  }
+
+  /* The expander. Styled as a peer of the tags rather than a control of its own,
+     so it reads as "there is more here" instead of as a button in the layout. */
+  .tagmore {
+    padding: .15rem .5rem;
+    font: inherit;
+    font-size: .74rem;
+    line-height: 1.5;
+    color: var(--fg-subtle);
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: var(--r-full);
+    cursor: pointer;
+    transition: color var(--fast), border-color var(--fast);
+  }
+  .tagmore:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ---------------------------------------------------------- results */
+
+
+  /* Page control. Every reachable page is shown, numbered, because GitHub's own
+     ceiling is ten and hiding any of them behind an ellipsis would imply pages
+     that cannot be fetched. */
+  .pager {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem;
+    justify-content: center;
+    margin-top: 1.1rem;
+  }
+
+  .pagebtn {
+    min-width: 2.1rem;
+    padding: .3rem .5rem;
+    font: inherit;
+    font-size: .84rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: color var(--fast), border-color var(--fast), background var(--fast);
+  }
+  .pagebtn:hover { color: var(--accent); border-color: var(--accent); }
+  .pagebtn.current {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+    font-weight: 600;
+    cursor: default;
+  }
+
+  /* The page being fetched. Distinct from `.current`, which is the page already
+     on screen — during a fast series of clicks the two are different numbers,
+     and showing only one of them would be a lie. */
+  .pagebtn.pending {
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+
   /* Buttons stay clickable while loading, so this is a nudge rather than a
      block: a reader clicking through page numbers can still reach the control. */
   .pagebtn.pending + .pagebtn,
   .pagebtn.pending:hover { border-color: var(--accent); }
-
-  .pagestatus {
-    align-self: center;
-    margin-right: .35rem;
-    color: var(--accent);
-    font-size: .78rem;
-    font-weight: 500;
-    white-space: nowrap;
-    animation: pulse 1.1s ease-in-out infinite;
-  }
-
-  @keyframes pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 
   .note {
     margin: .2rem 0 0;
@@ -587,13 +854,19 @@
       <p class="tagline">Live search of GitHub Pages sites.</p>
 
       <form role="search" class="searchbox" id="f">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-             stroke-linecap="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
-        </svg>
-        <label class="sr" for="q">Search GitHub for Pages sites</label>
-        <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
-               placeholder="Search owner, repo, title or topic…" />
+        <div class="searchfield" id="searchfield">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+          </svg>
+          <label class="sr" for="q">Search GitHub for Pages sites</label>
+          <!-- A selected topic appears here as a removable chip, so the filter is
+               visible where the query lives instead of only as a highlighted tag
+               somewhere below the field. -->
+          <span class="searchchips" id="searchchips"></span>
+          <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="Search owner, repo, title or topic…" />
+        </div>
       </form>
     </div>
 
@@ -626,6 +899,7 @@
     </p>
   </div>
 
+  <div id="sortbar" class="sortbar" role="group" aria-label="Result order"></div>
   <div id="results"></div>
 </main>
 

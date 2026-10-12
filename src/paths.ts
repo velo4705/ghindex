@@ -17,8 +17,12 @@ export const PATHS = {
    *
    * This held the generated index shards and the per-site HTML pages, both of
    * which are gone: results are asked of GitHub live instead. What remains is
-   * the report-link config, which is written by `bun run reports` and read by
-   * the page to decide which repository a report issue opens in.
+   * the report-link config written by `bun run reports`.
+   *
+   * Note it is written but not read: report links were dropped from result rows
+   * during the redesign, so nothing in the page consumes it. `bun run reports`
+   * and this file are the last of that system; see the README before reviving
+   * either.
    */
   data: "src/site/data",
 } as const;

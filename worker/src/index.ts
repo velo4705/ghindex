@@ -46,6 +46,7 @@ import {
   clampPerPage,
   isProbeAllowed,
   normalizeQuery,
+  normalizeSort,
   probeBatchAllowed,
   PROBE_MAX_HOSTS,
   searchCacheKey,
@@ -295,6 +296,7 @@ async function refreshSearch(
 ): Promise<Response | null> {
   const page = clampPage(url.searchParams.get("page"));
   const perPage = clampPerPage(url.searchParams.get("per_page"));
+  const sort = normalizeSort(url.searchParams.get("sort"));
 
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -306,9 +308,14 @@ async function refreshSearch(
   const withToken = Boolean(env.GITHUB_TOKEN) && !retryAfterRejection;
   if (withToken) headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
 
+  // GitHub's own relevance ranking is the default and is what it returns when no
+  // sort qualifier is sent. "Most stars" adds the qualifier explicitly. Sorting
+  // by stars unconditionally would have made "best match" unreachable: GitHub
+  // ranks by text match and popularity, which is not the same order at all.
+  const sortClause = sort === "stars" ? "&sort=stars&order=desc" : "";
   const target =
     `${GITHUB_API}?q=${encodeURIComponent(`${q} in:name,description,readme`)}` +
-    `&per_page=${perPage}&sort=stars&order=desc&page=${page}`;
+    `&per_page=${perPage}${sortClause}&page=${page}`;
 
   let res: Response;
   try {

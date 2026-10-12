@@ -123,6 +123,7 @@ export const buildQueryForTest = buildQuery;
 
 /** Exposed for tests only. */
 export const MAX_PAGES_FOR_TEST = MAX_PAGES;
+export const pageUrlForTest = pageUrl;
 
 /**
  * Map one API item to a result row, or null if it has no Pages site.
@@ -155,10 +156,6 @@ function toResult(r) {
  * long-tail site has few stars, so without this it sits below whatever
  * happened to rank first in GitHub's ordering.
  */
-function byPopularity(a, b) {
-  return (b.stars - a.stars) || a.full_name.localeCompare(b.full_name);
-}
-
 /** Read the search rate-limit reset, if the response carries one. */
 function resetSeconds(res) {
   const reset = Number(res.headers.get("x-ratelimit-reset") || 0);
@@ -176,16 +173,20 @@ function resetSeconds(res) {
  *     `in:name,description,readme` itself. Sending the pre-built query would
  *     duplicate that qualifier and GitHub would reject it.
  */
-function pageUrl(input, page, edge) {
+function pageUrl(input, page, edge, sort) {
+  // "best" is GitHub's default relevance ranking, which it applies when no sort
+  // qualifier is sent. "stars" is the explicit most-stars-first ordering.
+  const sortClause = sort === "stars" ? "&sort=stars&order=desc" : "";
   if (edge) {
     return (
       `${edge}/api/search?q=${encodeURIComponent(String(input).trim())}` +
-      `&page=${page}&per_page=${PER_PAGE}`
+      `&page=${page}&per_page=${PER_PAGE}` +
+      (sort === "stars" ? "&sort=stars" : "")
     );
   }
   return (
     `${API}?q=${encodeURIComponent(buildQuery(input))}` +
-    `&per_page=${PER_PAGE}&sort=stars&order=desc&page=${page}`
+    `&per_page=${PER_PAGE}${sortClause}&page=${page}`
   );
 }
 
@@ -196,7 +197,7 @@ function pageUrl(input, page, edge) {
  * whether a mid-pagination rate limit is fatal (nothing found) or partial
  * (keep what we already have).
  */
-async function fetchPage(input, page, opts, edge) {
+async function fetchPage(input, page, opts, edge, sort) {
   const headers = { Accept: "application/vnd.github+json" };
   if (edge) {
     // No token, and none needed: the worker holds the credential server-side.
@@ -205,7 +206,7 @@ async function fetchPage(input, page, opts, edge) {
     if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
   }
 
-  const res = await fetch(pageUrl(input, page, edge), {
+  const res = await fetch(pageUrl(input, page, edge, sort), {
     headers,
     signal: opts.signal,
   });
@@ -216,7 +217,7 @@ async function fetchPage(input, page, opts, edge) {
    * budget rather than leaving them with nothing.
    */
   if (edge && (res.status >= 500 || res.status === 404)) {
-    return fetchPage(input, page, { ...opts, _retried: true }, null);
+    return fetchPage(input, page, { ...opts, _retried: true }, null, sort);
   }
 
   if (res.status === 403 || res.status === 429) {
@@ -269,14 +270,18 @@ export function pageCount(total) {
 export async function searchGitHub(input, opts = {}) {
   const q = buildQuery(input);
   const page = Math.max(1, Math.min(MAX_PAGES, opts.page ?? 1));
-  const empty = { query: input, results: [], total: 0, page, pages: 0, truncated: false };
+  // Relevance first. It is what GitHub ranks by when asked for nothing in
+  // particular, which is what a typed query means; sorting by stars instead
+  // buries the thing that matched under every popular repo that also matched.
+  const sort = opts.sort === "stars" ? "stars" : "best";
+  const empty = { query: input, results: [], total: 0, page, pages: 0, truncated: false, sort };
   if (!q) return empty;
 
   const edge = opts._retried ? null : edgeEndpoint();
 
   let res;
   try {
-    res = await fetchPage(input, page, opts, edge);
+    res = await fetchPage(input, page, opts, edge, sort);
   } catch (err) {
     if (err && err.name === "AbortError") throw err;
     const partial = `Could not reach GitHub (${String(err).slice(0, 60)}).`;
@@ -301,11 +306,15 @@ export async function searchGitHub(input, opts = {}) {
     seen.add(row.full_name);
     results.push(row);
   }
-  results.sort(byPopularity);
-
+  // Deliberately not re-sorted here. Sorting the filtered rows by stars
+  // client-side threw away GitHub's ordering entirely, so "best match" and "most
+  // stars" produced the same list and the control would have been a lie. GitHub
+  // already sorts by stars when asked to; in relevance mode its ranking is the
+  // answer, and filtering out repos without Pages sites preserves that order.
   return {
     query: input,
     results,
+    sort,
     total: res.total,
     page,
     pages: pageCount(res.total),

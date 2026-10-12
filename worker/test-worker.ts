@@ -13,6 +13,7 @@ import {
   isProbeAllowed,
   normalizeQuery,
   searchCacheKey,
+  normalizeSort,
 } from "./src/query.ts";
 import { handleRequest, __clearMemo } from "./src/index.ts";
 
@@ -119,6 +120,24 @@ eq(
 );
 check("different queries still differ", key("/api/search?q=a") !== key("/api/search?q=b"));
 check("unknown params are dropped", !key("/api/search?q=x&utm_source=t").includes("utm_source"));
+
+// Ordering is part of a result set's identity. Without it in the key, a "most
+// stars" request could be served the cached "best match" page for the same query
+// and page number — the reader would get a relevance list and no way to tell.
+check(
+  "the two orderings do not share a cache entry",
+  key("/api/search?q=x&page=2&sort=best") !== key("/api/search?q=x&page=2&sort=stars"),
+);
+check(
+  "an omitted sort is best match, not stars",
+  key("/api/search?q=x&page=2") === key("/api/search?q=x&page=2&sort=best"),
+);
+check(
+  "an unrecognised sort falls back to best",
+  key("/api/search?q=x&sort=nonsense") === key("/api/search?q=x&sort=best"),
+);
+eq("normalizeSort keeps stars", normalizeSort("STARS"), "stars");
+eq("normalizeSort defaults to best", normalizeSort("anything else"), "best");
 
 eq("page clamps to 1", String(clampPage("0")), "1");
 eq("page clamps to 10", String(clampPage("11")), "10");

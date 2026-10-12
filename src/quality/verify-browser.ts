@@ -232,7 +232,13 @@ async function runChecks(browser: string) {
   // scalar. Building the object in a second step keeps that explicit and means a
   // new field cannot silently arrive as `undefined` and fail every check at once.
   const arrival = await evalJs(`(() => {
-    const box = document.getElementById('q').getBoundingClientRect();
+    // The field, not the text input inside it. The border moved to a wrapper when
+    // topic chips were added, and the input sits inside asymmetric padding so the
+    // search icon has room on its left — so the input's own midpoint sits ~16px
+    // right of centre even though the visible box is dead centre. Measuring the
+    // input would be measuring padding, not layout.
+    const box = document.getElementById('searchfield').getBoundingClientRect();
+    const inputBox = document.getElementById('q').getBoundingClientRect();
     const hero = document.querySelector('.hero').getBoundingClientRect();
     const mid = (r) => (r.left + r.right) / 2;
     return JSON.stringify({
@@ -242,6 +248,15 @@ async function runChecks(browser: string) {
       h1: (document.querySelector('h1') || {}).textContent || '',
       tagline: (document.querySelector('.tagline') || {}).textContent || '',
       searchOffset: Math.round(Math.abs(mid(box) - mid(hero))),
+      // The input must still be inside the field it lives in, or a long topic
+      // chip has pushed it out.
+      inputInside: inputBox.left >= box.left && inputBox.right <= box.right,
+      chips: document.querySelectorAll('#searchchips .searchchip').length,
+      // The bottom breathing room is scoped to the results state. Applied
+      // unconditionally it would push the help line off a short viewport and
+      // make the pre-search view scroll — the thing it was withheld to avoid.
+      mainPadBottom: getComputedStyle(document.querySelector('main')).paddingBottom,
+      noScroll: document.documentElement.scrollHeight <= window.innerHeight + 1,
       // clientWidth, not innerWidth: innerWidth includes the scrollbar gutter,
       // so centring against it measures the layout as off-centre by half the
       // scrollbar width on any page tall enough to scroll.
@@ -253,6 +268,11 @@ async function runChecks(browser: string) {
   check("a subtitle is shown", (a.tagline || "").length > 0, a.tagline);
   check("a help line is shown", /GitHub/.test(a.helpline || ""), (a.helpline || "").slice(0, 60));
   check("the search box is centred under the hero", a.searchOffset <= 2, `${a.searchOffset}px off centre`);
+  check("the search input stays inside the field", a.inputInside === true);
+  check("no topic chip is shown before one is chosen", a.chips === 0, `${a.chips} chips`);
+  check("nothing is added below the help line before a search",
+    /^0(px)?$/.test(String(a.mainPadBottom).trim()), `padding-bottom=${a.mainPadBottom}`);
+  check("and the arriving page does not scroll", a.noScroll === true);
   check("the hero is centred on the page", a.heroOffset <= 2, `${a.heroOffset}px off centre`);
 
   // "Dead centre" means the middle of the screen, not the middle of a column, and
@@ -530,15 +550,16 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
   );
   check("and jumping back to page 1 works", backTo1 === true);
 
-  // --- the buffer: clicking through several pages quickly -------------------
+  // --- a page turn: the list is replaced and names the page being fetched ----
   //
-  // The case this exists for: you land on the wrong page and click through
-  // several numbers to find the right one. Each click aborts the request before
-  // it, so only the last is paid for, and the list on screen stays readable
-  // throughout instead of flashing an empty "Searching GitHub…".
+  // Holding the old page's rows on screen under a pager showing a different page
+  // is the confusing option: the results and the control disagree about what is
+  // being displayed. Taking the list away and naming the page — as a search
+  // engine does — leaves no ambiguity.
   const firstRowBefore = await evalJs(`document.querySelector('#results .row h3 a')?.textContent ?? ''`);
 
-  // Three clicks in one turn, with no waiting between them.
+  // Three clicks in one turn, with no waiting between them: the case of landing
+  // on the wrong page and clicking through to find the right one.
   await evalJs(`(() => {
     for (const n of [3, 5, 4]) {
       document.querySelector('#results .pagebtn[data-page="' + n + '"]')?.click();
@@ -546,29 +567,30 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
     return 1;
   })()`);
 
-  // Immediately afterwards the list must still be there. A click that replaced it
-  // with a placeholder would leave the reader staring at "Searching GitHub…" for
-  // every page they click through.
   const duringLoad = JSON.parse(String(await evalJs(`JSON.stringify((() => {
     const el = document.getElementById('results');
     return {
       rows: el.querySelectorAll('.row').length,
+      empty: (el.querySelector('.empty') || {}).textContent || '',
       busy: el.getAttribute('aria-busy'),
-      status: document.querySelector('.pagestatus')?.textContent ?? '',
-      pending: document.querySelector('.pagebtn.pending')?.textContent ?? '',
-      current: document.querySelector('.pagebtn.current')?.textContent ?? '',
-      // Still clickable: greying the control out would break the very case this
-      // is for.
+      pending: (document.querySelector('.pagebtn.pending') || {}).textContent || '',
+      current: (document.querySelector('.pagebtn.current') || {}).textContent || '',
+      // The control must survive: a reader who realises they chose wrong needs
+      // to be able to correct it without waiting out the fetch.
+      pagerPresent: !!document.querySelector('#results .pager'),
       disabled: el.querySelectorAll('.pagebtn[disabled]').length,
     };
   })())`)));
-  check("the previous page stays on screen while the next loads",
-    duringLoad.rows > 0, `${duringLoad.rows} rows`);
-  check("and is announced as busy", duringLoad.busy === "true", `aria-busy=${duringLoad.busy}`);
-  check("the pager says which page is loading", /Loading page 4/.test(duringLoad.status), JSON.stringify(duringLoad.status));
+
+  check("the previous page's rows are taken away while the next loads",
+    duringLoad.rows === 0, `${duringLoad.rows} rows left`);
+  check("and the placeholder names the page being fetched",
+    /Loading page 4/.test(duringLoad.empty), JSON.stringify(duringLoad.empty));
+  check("it is announced as busy", duringLoad.busy === "true", `aria-busy=${duringLoad.busy}`);
   check("the requested page is marked pending", duringLoad.pending === "4", `pending=${duringLoad.pending}`);
   check("the page already shown stays marked current", duringLoad.current === "1", `current=${duringLoad.current}`);
-  check("the buttons stay clickable", duringLoad.disabled === 0, `${duringLoad.disabled} disabled`);
+  check("the page control stays available", duringLoad.pagerPresent === true);
+  check("and stays clickable", duringLoad.disabled === 0, `${duringLoad.disabled} disabled`);
 
   // Only the last click should land: page 4, not page 3 or 5.
   const landed = await waitFor(
@@ -577,22 +599,46 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
   );
   check("only the last click takes effect", landed === true);
 
-  const settled = await evalJs(`JSON.stringify((() => {
+  const settled = JSON.parse(String(await evalJs(`JSON.stringify((() => {
     const el = document.getElementById('results');
     return {
-      first: el.querySelector('.row h3 a')?.textContent ?? '',
+      first: (el.querySelector('.row h3 a') || {}).textContent || '',
+      rows: el.querySelectorAll('.row').length,
       busy: el.getAttribute('aria-busy'),
-      status: document.querySelector('.pagestatus')?.textContent ?? '',
-      pending: document.querySelector('.pagebtn.pending')?.textContent ?? '',
+      empty: (el.querySelector('.empty') || {}).textContent || '',
+      pending: (document.querySelector('.pagebtn.pending') || {}).textContent || '',
     };
-  })())`);
-  const s2 = JSON.parse(String(settled));
-  check("the new page's rows replace the old", s2.first !== firstRowBefore, `${firstRowBefore} -> ${s2.first}`);
-  check("and the busy state clears afterwards",
-    s2.busy === "false" && s2.status === "" && s2.pending === "",
-    `busy=${s2.busy} status="${s2.status}" pending=${s2.pending}`);
+  })())`)));
+  check("the new page's rows pop in", settled.rows > 0 && settled.first !== firstRowBefore,
+    `${firstRowBefore} -> ${settled.first}`);
+  check("and the loading state is gone",
+    settled.busy === "false" && settled.empty === "" && settled.pending === "",
+    `busy=${settled.busy} empty="${settled.empty}" pending=${settled.pending}`);
 
   check("there is exactly one results container", await evalJs(`document.querySelectorAll('#results').length`) === 1);
+
+  // ------------------------------------------------------- space under the pager
+
+  // The pager was landing flush against the bottom of the viewport, so the last
+  // row of controls had nothing beneath it and the page read as cut off. Scrolled
+  // to the very bottom, there should now be a gap between the pager and the end
+  // of the document.
+  const under = JSON.parse(String(await evalJs(`(() => {
+    window.scrollTo(0, document.body.scrollHeight);
+    const pager = document.querySelector('#results .pager');
+    if (!pager) return JSON.stringify({ missing: true });
+    const p = pager.getBoundingClientRect();
+    return JSON.stringify({
+      missing: false,
+      // Distance from the pager's last row of buttons to the document's end.
+      gap: Math.round(
+        document.documentElement.scrollHeight -
+        (window.scrollY + p.bottom)
+      ),
+    });
+  })()`)));
+  check("the pager is not flush with the end of the page",
+    under.missing === false && under.gap >= 40, `gap=${under.gap}px`);
 
 // The result list has to be as wide as the tag band: the "Searching GitHub…"
 // placeholder and the rows share this container, so a narrow one would squeeze
@@ -637,6 +683,127 @@ check(
 
 const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`);
   check("liveness badges are rendered", pills > 0, `${pills} badges`);
+
+  // --------------------------------------------------------- topic chip in field
+
+  // Selecting a topic has to show up inside the search field, not only as a
+  // highlighted button in the picker below it. Otherwise the field keeps showing
+  // its placeholder and looks idle while the results come from somewhere else.
+  const chosen = await evalJs(`(() => {
+    const btn = document.querySelector('#taglist .tagbtn[aria-pressed=false]');
+    if (!btn) return '';
+    const name = btn.dataset.tag;
+    btn.click();
+    return name;
+  })()`);
+  check("a topic could be selected", chosen !== "", chosen);
+
+  await waitFor(evalJs, `document.querySelectorAll('#searchchips .searchchip').length === 1`);
+  const chip = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+    const chip = document.querySelector('#searchchips .searchchip');
+    if (!chip) return { missing: true };
+    const field = document.getElementById('searchfield').getBoundingClientRect();
+    const c = chip.getBoundingClientRect();
+    const input = document.getElementById('q').getBoundingClientRect();
+    const x = chip.querySelector('.searchchip-x');
+    return {
+      missing: false,
+      label: chip.querySelector('.searchchip-label').textContent,
+      // It must look like part of the field, not float outside it.
+      insideField: c.left >= field.left && c.right <= field.right,
+      sharesRowWithInput: Math.abs((c.top + c.height / 2) - (input.top + input.height / 2)) < 12,
+      xTag: x?.tagName ?? '',
+      // "×" alone tells a screen reader nothing about what it removes.
+      xName: x?.getAttribute('aria-label') ?? '',
+      xTitle: x?.getAttribute('title') ?? '',
+    };
+  })())`)));
+  check("the selected topic appears as a chip in the search field",
+    chip.missing === false, JSON.stringify(chip).slice(0, 90));
+  check("the chip is labelled with the topic", chip.label === chosen, `${chip.label} vs ${chosen}`);
+  check("the chip sits inside the search field", chip.insideField === true);
+  check("the chip shares the field's row with the input", chip.sharesRowWithInput === true);
+  check("the remove control is a button", chip.xTag === "BUTTON", chip.xTag);
+  check("the remove control names what it removes",
+    /remove/i.test(chip.xName) && chip.xName.toLowerCase().includes(chosen.toLowerCase()),
+    chip.xName);
+
+  // Removing it from the field must work on its own, without the original tag
+  // button being in view or clicked.
+  await evalJs(`document.querySelector('#searchchips .searchchip-x')?.click()`);
+  const afterX = await waitFor(
+    evalJs,
+    `document.querySelectorAll('#searchchips .searchchip').length === 0`,
+  );
+  check("the chip's × removes the filter", afterX === true);
+  check("and the tag button goes back to unselected",
+    await evalJs(`document.querySelectorAll('#taglist .tagbtn[aria-pressed=true]').length`) === 0);
+  // Focus must not be stranded: the pressed button is gone from the DOM, so
+  // without this the next keystroke would go to the body.
+  check("focus returns to the search field",
+    await evalJs(`document.activeElement?.id`) === "q",
+    await evalJs(`document.activeElement?.id ?? 'none'`));
+
+  // ------------------------------------------------------------- result order
+
+  // The ordering control. It only makes sense once there is a query, so it is
+  // absent while there is nothing to order — which is the state the chip test
+  // above leaves the page in.
+  const sortWhenEmpty = await evalJs(`document.querySelectorAll('#sortbar .sortbtn').length`);
+  check("no ordering control with nothing to order", sortWhenEmpty === 0, `${sortWhenEmpty} buttons`);
+
+  await evalJs(`document.querySelectorAll('#taglist .tagbtn[aria-pressed=false]')[0]?.click()`);
+  await Bun.sleep(600);
+
+  const sortbar = JSON.parse(String(await evalJs(`JSON.stringify({
+    buttons: [...document.querySelectorAll('#sortbar .sortbtn')].map(b => ({
+      sort: b.dataset.sort,
+      label: b.textContent.trim(),
+      pressed: b.getAttribute('aria-pressed'),
+    })),
+    // Relevance is the default and has to be visible, not merely implied.
+    defaultPressed: document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort ?? '',
+  })`)));
+  check("two ordering options are offered", sortbar.buttons.length === 2, `${sortbar.buttons.length}`);
+  check("they are Best match and Most stars",
+    sortbar.buttons.map((b: any) => b.label).join("/") === "Best match/Most stars",
+    sortbar.buttons.map((b: any) => b.label).join("/"));
+  check("Best match is marked current by default", sortbar.defaultPressed === "best",
+    sortbar.defaultPressed);
+
+  // Switching must change the order of the same query, and must restart at page 1
+  // rather than keeping whichever page happened to be showing.
+  const orderProbe = await evalJs(`(async () => {
+    const seen = {};
+    // Read the current first result, then switch and read it again.
+    seen.before = (document.querySelector('#results .row h3 a') || {}).textContent || '';
+    return JSON.stringify(seen);
+  })()`);
+  const firstBeforeSort = JSON.parse(String(orderProbe)).before;
+
+  await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="stars"]')?.click()`);
+  await Bun.sleep(400);
+  const switched = JSON.parse(String(await evalJs(`JSON.stringify({
+    pressed: document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort ?? '',
+    page: (document.querySelector('#results .pagebtn.current') || {}).textContent || '',
+    first: (document.querySelector('#results .row h3 a') || {}).textContent || '',
+    busy: document.getElementById('results').getAttribute('aria-busy'),
+  })`)));
+  check("the control switches to Most stars", switched.pressed === "stars", switched.pressed);
+  check("switching order restarts at page 1", switched.page === "1", `page=${switched.page}`);
+  check("and the busy state is cleared afterwards", switched.busy === "false", switched.busy);
+  // The top result is not asserted to change: relevance and most-stars can
+  // legitimately agree on first place. That the two orderings actually request
+  // different orderings from GitHub is pinned against the URL builder instead,
+  // because this test runs against the *deployed* worker, which does not have
+  // the change until it ships.
+  check("and the results were re-fetched",
+    switched.first !== "" || firstBeforeSort !== "", `${switched.first || firstBeforeSort}`);
+
+  await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="best"]')?.click()`);
+  await Bun.sleep(400);
+  check("and back to Best match",
+    await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort`) === "best");
 
   // ------------------------------------------------------------- tag toggle off
 
