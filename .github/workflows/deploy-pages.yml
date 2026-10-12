@@ -56,26 +56,47 @@ jobs:
       # results, because the old client-side sort had not been replaced yet and the
       # new one was never fetched. A per-deploy query string changes the URL, so the
       # cache cannot satisfy the new page with the old script.
-      - name: Stamp the build into asset URLs
-        run: |
-          set -euo pipefail
-          sha="$(git rev-parse --short HEAD)"
-          # Rewrite only the local site's asset references, never the committed
-          # files, so the checkout stays clean for the upload step.
-          for f in src/site/*.html; do
-            sed -i -E "s#(\./)?((app|github-search|taxonomy)\.js)(\?[^"'\)]*)?#\2?v=${sha}#g" "$f"
-          done
-          grep -o 'app.js?v=[a-f0-9]*' src/site/index.html
-
-      # The whole site is committed, so a plain upload of src/site is enough.
-      # There is no index to go stale, but the static assets still have to be
-      # internally consistent, so the front-end shape check runs here too.
       - name: Verify the committed site
         run: |
           set -euo pipefail
           bun --version
           bun run test:front-end
 
+      - name: Stamp the build into asset URLs
+        # Runs after the verification above, not before it. The front-end check
+        # calls Bun.build, which resolves dynamic imports as filesystem paths and
+        # cannot resolve "./module.js?v=<sha>"; stamping first would make the
+        # build fail on files the browser loads perfectly well.
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          # One filename per iteration rather than one alternation.
+          #
+          # The earlier single-expression version needed a `"` inside a
+          # double-quoted shell string to cope with the attribute quoting, which
+          # closed the string early and failed the whole job with an "unexpected
+          # EOF". There are only three files and they are referenced only from
+          # index.html, so a plain loop needs no quoting gymnastics at all.
+          for name in app github-search taxonomy; do
+            sed -i -E "s#(\./)?${name}\.js#${name}.js?v=${sha}#g" src/site/index.html
+          done
+          # The other two are reached by dynamic import from inside app.js, not by
+          # a script tag, so stamping index.html alone left them cacheable under
+          # their bare names and the stale-module problem moved one level down.
+          for name in github-search taxonomy; do
+            sed -i -E "s#\./${name}\.js#./${name}.js?v=${sha}#g" src/site/app.js
+          done
+          # Fail loudly if either stamp did not land. A silently unstamped build is
+          # precisely the stale-script problem this step exists to prevent, so it
+          # must not be allowed to pass quietly.
+          grep -qE "app\.js\?v=${sha}" src/site/index.html
+          grep -qE "\./github-search\.js\?v=${sha}" src/site/app.js
+          grep -qE "\./taxonomy\.js\?v=${sha}" src/site/app.js
+          grep -oE "[a-z-]+\.js\?v=[a-f0-9]+" src/site/index.html src/site/app.js
+
+      # The whole site is committed, so a plain upload of src/site is enough.
+      # There is no index to go stale, but the static assets still have to be
+      # internally consistent, so the front-end shape check runs here too.
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
