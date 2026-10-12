@@ -782,7 +782,14 @@ const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="li
   const firstBeforeSort = JSON.parse(String(orderProbe)).before;
 
   await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="stars"]')?.click()`);
-  await Bun.sleep(400);
+  // Wait for the state to settle rather than sleeping a fixed interval. A cold
+  // GitHub page is two to three seconds, and a fixed 400ms wait only ever passed
+  // because the response happened to be cached — it asserted the cache, not the
+  // behaviour.
+  await waitFor(
+    evalJs,
+    `document.getElementById('results')?.getAttribute('aria-busy') === 'false'`,
+  );
   const switched = JSON.parse(String(await evalJs(`JSON.stringify({
     pressed: document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort ?? '',
     page: (document.querySelector('#results .pagebtn.current') || {}).textContent || '',
@@ -801,7 +808,10 @@ const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="li
     switched.first !== "" || firstBeforeSort !== "", `${switched.first || firstBeforeSort}`);
 
   await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="best"]')?.click()`);
-  await Bun.sleep(400);
+  await waitFor(
+    evalJs,
+    `document.getElementById('results')?.getAttribute('aria-busy') === 'false'`,
+  );
   check("and back to Best match",
     await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort`) === "best");
 

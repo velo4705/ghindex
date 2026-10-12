@@ -48,6 +48,25 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
 
+      # Stamp the commit into the asset URLs.
+      #
+      # Pages serves static files with `cache-control: max-age=600`, so a browser
+      # that loaded the site before a deploy keeps running the previous app.js for
+      # up to ten minutes. During that window it silently star-sorted "best match"
+      # results, because the old client-side sort had not been replaced yet and the
+      # new one was never fetched. A per-deploy query string changes the URL, so the
+      # cache cannot satisfy the new page with the old script.
+      - name: Stamp the build into asset URLs
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          # Rewrite only the local site's asset references, never the committed
+          # files, so the checkout stays clean for the upload step.
+          for f in src/site/*.html; do
+            sed -i -E "s#(\./)?((app|github-search|taxonomy)\.js)(\?[^"'\)]*)?#\2?v=${sha}#g" "$f"
+          done
+          grep -o 'app.js?v=[a-f0-9]*' src/site/index.html
+
       # The whole site is committed, so a plain upload of src/site is enough.
       # There is no index to go stale, but the static assets still have to be
       # internally consistent, so the front-end shape check runs here too.

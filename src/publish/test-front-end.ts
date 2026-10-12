@@ -264,7 +264,14 @@ check("relevance sends no sort qualifier", !direct("best").includes("sort="), di
 check("most stars sends the stars qualifier",
   direct("stars").includes("sort=stars&order=desc"), direct("stars"));
 check("the two orderings are different requests", direct("best") !== direct("stars"));
-check("relevance reaches the edge worker as no sort", !edgeUrl("best").includes("sort="), edgeUrl("best"));
+// Relevance is sent explicitly. Omitting it made this URL byte-identical to the
+// one the worker used while it hard-coded star sorting, so any cache keyed on the
+// URL could answer a relevance request with a star-sorted body.
+check("relevance reaches the edge worker as an explicit sort=best",
+  edgeUrl("best").includes("sort=best"), edgeUrl("best"));
+check("and the two edge URLs can never be confused",
+  edgeUrl("best") !== edgeUrl("stars"));
+check("the GitHub API omits the qualifier for relevance", !direct("best").includes("sort="));
 check("most stars reaches the edge worker as sort=stars",
   edgeUrl("stars").includes("sort=stars"), edgeUrl("stars"));
 check("page and per_page survive either ordering",

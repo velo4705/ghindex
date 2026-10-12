@@ -178,10 +178,18 @@ function pageUrl(input, page, edge, sort) {
   // qualifier is sent. "stars" is the explicit most-stars-first ordering.
   const sortClause = sort === "stars" ? "&sort=stars&order=desc" : "";
   if (edge) {
+    // sort is always sent, including for relevance.
+    //
+    // Omitting it made the relevance request byte-identical to the one the
+    // worker used to send while it hard-coded star sorting. Any HTTP cache keyed
+    // on the URL — the browser, Cloudflare, anything in between — could therefore
+    // hand a star-sorted body back for a relevance request, and nothing on the
+    // receiving end could tell the difference. Naming the ordering explicitly
+    // means a relevance request can never be answered from a star-sorted entry,
+    // however stale it is.
     return (
       `${edge}/api/search?q=${encodeURIComponent(String(input).trim())}` +
-      `&page=${page}&per_page=${PER_PAGE}` +
-      (sort === "stars" ? "&sort=stars" : "")
+      `&page=${page}&per_page=${PER_PAGE}&sort=${sort === "stars" ? "stars" : "best"}`
     );
   }
   return (
