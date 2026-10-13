@@ -27,7 +27,7 @@
  *  - A token can be supplied by the user for the authenticated rate limit, but
  *    never stored: there is no backend to keep a secret in.
  *  - Results are shown as a separate group so it is always clear they came
- *    from GitHub, are not part of the curated index, and are unverified.
+ *    from GitHub, are not part of the curated index, and are unconfirmed.
  *
  * NOTE: plain JavaScript, not TypeScript. The publish pipeline has no build
  * step, so every file served to the browser is loaded exactly as written.
@@ -337,7 +337,7 @@ export async function searchGitHub(input, opts = {}) {
  * that a repository *has* Pages enabled, which is a repository setting and can
  * be weeks out of date with reality. The site's own liveness pass covers the
  * curated index, but these results are outside it, so without a server they can
- * only ever be labelled unverified.
+ * only ever be shown as unconfirmed.
  *
  * From the worker there is no CORS restriction, so a real HEAD can be made and
  * the answer is honest. Returns null when no edge is configured or the check

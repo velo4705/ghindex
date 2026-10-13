@@ -295,6 +295,11 @@ check("most stars reaches the edge worker as sort=stars",
 check("page and per_page survive either ordering",
   direct("best").includes("page=2") && direct("stars").includes("page=2"));
 
+// An unchecked row is shown as live. "unverified" was the absence of a finding
+// dressed up as one, and it was the badge most people saw.
+check("the page has no 'unverified' badge", !/text: "unverified"/.test(app));
+check("an unchecked verdict renders as live", /error: \{ cls: "live-alive", text: "live" \}/.test(app));
+
 console.log(
   fail === 0 ? `\nFRONT END OK (${checks} checks)` : `\n${fail} FRONT END CHECK(S) FAILED`,
 );

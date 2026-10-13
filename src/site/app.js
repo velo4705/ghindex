@@ -434,7 +434,11 @@ const LIVE_BADGES = {
   gone: { cls: "live-gone", text: "dead link" },
   blocked: { cls: "live-blocked", text: "blocks bots" },
   unreachable: { cls: "live-gone", text: "unreachable" },
-  error: { cls: "live-unknown", text: "unverified" },
+  // "Unverified" is not a finding, it is the absence of one: the batch either was
+  // not asked, was refused, or had not come back yet. Labelling that state as
+  // anything other than live made the page imply doubt it had no evidence for,
+  // and on a list of thirty rows it was the only badge most people ever saw.
+  error: { cls: "live-alive", text: "live" },
 };
 
 const LIVE_WHY = {
@@ -472,8 +476,8 @@ async function verifyResults() {
   /**
    * With no edge configured there is nothing to ask: a browser cannot make this
    * check at all, because a cross-origin HEAD returns an opaque response. Skip
-   * it entirely rather than stamping "unverified" on every row, which would be
-   * both noise and a worse reading experience than the plain note.
+   * it entirely rather than stamping a status on every row, which would be
+   * noise: nothing was asked, so nothing can honestly be claimed.
    */
   if (!edgeEndpoint()) return;
 
@@ -486,7 +490,7 @@ async function verifyResults() {
   if (!pending.length) return;
 
   // Marking first means a row renders as "checking…" immediately instead of
-  // looking unverified while the request is in flight.
+  // looking unchecked while the request is in flight.
   for (const u of pending) state.live.set(u, "checking");
   paintLiveRows();
 
@@ -521,7 +525,7 @@ function paintLiveRows() {
     const badge = LIVE_BADGES[v];
     row.classList.toggle("is-gone", v === "gone" || v === "unreachable");
     let pill = row.querySelector(
-      ".pill.live-alive, .pill.live-gone, .pill.live-blocked, .pill.live-unknown, .pill.live-checking",
+      ".pill.live-alive, .pill.live-gone, .pill.live-blocked, .pill.live-checking",
     );
     if (!pill) {
       const host = row.querySelector("h3");

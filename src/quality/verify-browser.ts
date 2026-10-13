@@ -690,7 +690,7 @@ const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="li
 // measured between the shortest and longest label - on the one column a reader is
 // actually scanning. Both edges should line up instead.
 const badgeAlign = JSON.parse(String(await evalJs(`JSON.stringify((() => {
-  const labels = ['live', 'dead link', 'blocks bots', 'checking\u2026', 'unverified'];
+  const labels = ['live', 'dead link', 'blocks bots', 'checking\u2026', 'unreachable'];
   const h3 = document.querySelector('#results .row h3');
   const link = h3 && h3.querySelector('a');
   if (!h3 || !link) return { missing: true };
