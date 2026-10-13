@@ -241,7 +241,8 @@
     display: flex;
     align-items: center;
     gap: .45rem;
-    padding: .5rem .95rem .5rem 2.9rem;
+    flex-wrap: wrap;
+    padding: .5rem .95rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
@@ -256,10 +257,11 @@
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
   }
 
+  /* The icon is a flex item rather than an absolutely-positioned one over a
+     reserved gutter. Centring it on the row it actually occupies keeps it aligned
+     with the text whether the field is one line or has wrapped chips on it. */
   .searchfield svg {
-    position: absolute;
-    left: 1rem; top: 50%;
-    translate: 0 -50%;
+    flex: 0 0 auto;
     width: 18px; height: 18px;
     color: var(--fg-subtle);
     pointer-events: none;
@@ -334,11 +336,6 @@
     transition: color var(--fast);
   }
   .searchchips-clear:hover { color: var(--accent); }
-
-  /* With chips wrapping, the field has to be able to grow vertically without the
-     search icon drifting away from the centre. */
-  .searchfield { flex-wrap: wrap; }
-  .searchfield svg { top: .95rem; }
 
   input[type=search] {
     flex: 1 1 6rem;
@@ -570,11 +567,6 @@
     transition: color var(--fast);
   }
   .searchchips-clear:hover { color: var(--accent); }
-
-  /* With chips wrapping, the field has to be able to grow vertically without the
-     search icon drifting away from the centre. */
-  .searchfield { flex-wrap: wrap; }
-  .searchfield svg { top: .95rem; }
 
   input[type=search] {
     flex: 1 1 6rem;
