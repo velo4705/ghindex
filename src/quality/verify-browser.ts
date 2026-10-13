@@ -690,6 +690,19 @@ const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="li
   // Selecting a topic has to show up inside the search field, not only as a
   // highlighted button in the picker below it. Otherwise the field keeps showing
   // its placeholder and looks idle while the results come from somewhere else.
+  // Start from nothing selected. The selection is a list now, so a tag left over
+  // from an earlier block would make this block's "one chip" assertions wrong.
+  await evalJs(`(async () => {
+    for (let i = 0; i < 20; i++) {
+      const b = document.querySelector('#taglist .tagbtn[aria-pressed=true]');
+      if (!b) break;
+      b.click();
+      await new Promise(r => setTimeout(r, 40));
+    }
+    return 1;
+  })()`);
+  await Bun.sleep(1200);
+
   const chosen = await evalJs(`(() => {
     const btn = document.querySelector('#taglist .tagbtn[aria-pressed=false]');
     if (!btn) return '';
@@ -737,6 +750,8 @@ const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="li
     `document.querySelectorAll('#searchchips .searchchip').length === 0`,
   );
   check("the chip's × removes the filter", afterX === true);
+  check("and no other chip is left behind",
+    await evalJs(`document.querySelectorAll('#searchchips .searchchip').length`) === 0);
   check("and the tag button goes back to unselected",
     await evalJs(`document.querySelectorAll('#taglist .tagbtn[aria-pressed=true]').length`) === 0);
   // Focus must not be stranded: the pressed button is gone from the DOM, so
@@ -883,12 +898,92 @@ const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="li
   check("and back to Best match",
     await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort`) === "best");
 
+  // ------------------------------------------------------ several tags at once
+
+  // GitHub ANDs the terms, so two tags genuinely narrow rather than one replacing
+  // the other. A single tag forced every extra click to discard the previous
+  // choice, which made the picker useless for anything like a two-word search.
+  await evalJs(`(async () => {
+    for (let i = 0; i < 20; i++) {
+      const b = document.querySelector('#taglist .tagbtn[aria-pressed=true]');
+      if (!b) break;
+      b.click();
+      await new Promise(r => setTimeout(r, 40));
+    }
+    return 1;
+  })()`);
+  await Bun.sleep(1200);
+
+  // Clicking two buttons in one tick re-queries between clicks: the first click
+  // re-renders the picker, so the second would otherwise be clicked against a
+  // stale list and could land on the tag just selected.
+  const multi = await evalJs(`(async () => {
+    const pick = () => document.querySelector('#taglist .tagbtn[aria-pressed=false]');
+    pick().click();
+    await new Promise(r => setTimeout(r, 60));
+    pick().click();
+    return JSON.stringify({
+      chips: [...document.querySelectorAll('.searchchip-label')].map(c => c.textContent),
+      pressed: [...document.querySelectorAll('#taglist .tagbtn[aria-pressed=true]')]
+        .map(b => b.dataset.tag),
+      hasClear: !!document.querySelector('.searchchips-clear'),
+    });
+  })()`);
+  check("two tags can be selected at once", JSON.parse(String(multi)).chips.length === 2,
+    JSON.stringify(JSON.parse(String(multi)).chips));
+  check("both stay pressed in the picker",
+    JSON.parse(String(multi)).pressed.length === 2,
+    JSON.stringify(JSON.parse(String(multi)).pressed));
+  check("and a clear-all control appears", JSON.parse(String(multi)).hasClear === true);
+
+  await waitFor(
+    evalJs,
+    `!/Searching/.test(document.getElementById('results').textContent) &&
+     document.querySelectorAll('#results .row').length > 0`,
+  );
+  const bothTerms = await evalJs(`(document.querySelector('#results p.note') || {}).textContent || ''`);
+  check("the summary reports both keywords",
+    /keywords:/.test(bothTerms) && / and /.test(bothTerms),
+    bothTerms.slice(0, 90));
+
+  // Removing one keyword must leave the other alone.
+  const dropOne = await evalJs(`(() => {
+    document.querySelector('#searchchips .searchchip-x')?.click();
+    return JSON.stringify({
+      chips: [...document.querySelectorAll('.searchchip-label')].map(c => c.textContent),
+      clear: !!document.querySelector('.searchchips-clear'),
+    });
+  })()`);
+  const d1 = JSON.parse(String(dropOne));
+  check("removing one chip keeps the other", d1.chips.length === 1, JSON.stringify(d1.chips));
+  check("and the clear-all control goes with the last one", d1.clear === false);
+
   // ------------------------------------------------------------- tag toggle off
 
   // A picker that can only be turned on is a one-way door: someone who picks
   // the wrong tag would have to reload to get back.
+  // Clear whatever earlier blocks selected first: the selection is a list now, so
+  // leaving a stray tag behind makes "the selected tag" ambiguous.
+  await evalJs(`(async () => {
+    for (let i = 0; i < 20; i++) {
+      const b = document.querySelector('#taglist .tagbtn[aria-pressed=true]');
+      if (!b) break;
+      b.click();
+      await new Promise(r => setTimeout(r, 40));
+    }
+    return 1;
+  })()`);
+  await Bun.sleep(1200);
+
+  await evalJs(`(() => {
+    const b = document.querySelector('#taglist .tagbtn[aria-pressed=false]');
+    b.click();
+    return 1;
+  })()`);
+  await Bun.sleep(1200);
+
   await evalJs(`document.querySelector('#taglist .tagbtn[aria-pressed=true]')?.click()`);
-  await Bun.sleep(500);
+  await Bun.sleep(700);
   check(
     "clicking the selected tag clears it",
     await evalJs(`document.querySelectorAll('#taglist .tagbtn[aria-pressed=true]').length`) === 0,

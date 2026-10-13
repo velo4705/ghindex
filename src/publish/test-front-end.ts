@@ -122,7 +122,12 @@ check("it loads the curated list", /BROWSE_TAGS/.test(app));
 
 // Selecting a tag has to be a toggle, or a visitor who picks the wrong one
   // cannot get back to an unfiltered search without reloading.
-  check("selecting a tag is reversible", /state\.tag === tag \? "" : tag/.test(app));
+  check(
+    "selecting a tag is reversible",
+    /state\.picked = state\.picked\.includes\(tag\)/.test(app) &&
+      /state\.picked\.filter\(\(t\) => t !== tag\)/.test(app),
+    "the toggle must remove only the tag it was clicked on",
+  );
 
 // The picker must be a real two-state control. It shipped broken once: the
   // collapsed state was a CSS `max-height` + `overflow: hidden` cut, which sliced
@@ -212,8 +217,13 @@ check(
 // the ordering control did nothing on the path most visitors arrive by.
 check("no topic: qualifier is used for a tag", !/topic:\$\{/.test(app));
 check("the tag is combined with the typed text",
-  /\[state\.tag, raw\]\.filter\(Boolean\)\.join\(" "\)/.test(app),
+  /\[\.\.\.state\.picked, raw\]\.filter\(Boolean\)\.join\(" "\)/.test(app),
   "tag and text must AND, not replace each other");
+// Several tags AND together. They must reach the query as separate terms, which
+// is what makes a second tag a narrowing rather than a replacement.
+check("every picked tag reaches the query",
+  /\[\.\.\.state\.picked, raw\]/.test(app) &&
+  !/state\.picked\.join\(" "\)\s*\+/.test(app));
 check("the summary no longer claims a topic filter", !/topic: \$\{/.test(app));
 
 // ------------------------------------------------------------- live path

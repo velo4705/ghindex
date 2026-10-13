@@ -265,9 +265,6 @@
     pointer-events: none;
   }
 
-  /* The active topic, rendered like a GitHub topic chip. */
-  .searchchips { display: contents; }
-
   .searchchip {
     display: inline-flex;
     align-items: center;
@@ -314,8 +311,37 @@
     background: color-mix(in srgb, var(--accent) 22%, transparent);
   }
 
+  /* Several keywords can be chosen at once. They wrap to a second line inside
+     the field rather than scrolling sideways, so the field grows taller instead
+     of becoming a one-line strip you have to scroll. */
+  .searchchips {
+    display: contents;
+  }
+
+  .searchchips-clear {
+    flex: 0 0 auto;
+    padding: .18rem .5rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--fg-subtle);
+    font: inherit;
+    font-size: .82rem;
+    line-height: 1.5;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color var(--fast);
+  }
+  .searchchips-clear:hover { color: var(--accent); }
+
+  /* With chips wrapping, the field has to be able to grow vertically without the
+     search icon drifting away from the centre. */
+  .searchfield { flex-wrap: wrap; }
+  .searchfield svg { top: .95rem; }
+
   input[type=search] {
-    flex: 1 1 auto;
+    flex: 1 1 6rem;
     /* The chip can be long, so the field must be allowed to shrink rather than
        pushing the input out of the box on a narrow screen. */
     min-width: 0;
@@ -521,8 +547,37 @@
   .pagebtn.pending + .pagebtn,
   .pagebtn.pending:hover { border-color: var(--accent); }
 
+  /* Several keywords can be chosen at once. They wrap to a second line inside
+     the field rather than scrolling sideways, so the field grows taller instead
+     of becoming a one-line strip you have to scroll. */
+  .searchchips {
+    display: contents;
+  }
+
+  .searchchips-clear {
+    flex: 0 0 auto;
+    padding: .18rem .5rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--fg-subtle);
+    font: inherit;
+    font-size: .82rem;
+    line-height: 1.5;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color var(--fast);
+  }
+  .searchchips-clear:hover { color: var(--accent); }
+
+  /* With chips wrapping, the field has to be able to grow vertically without the
+     search icon drifting away from the centre. */
+  .searchfield { flex-wrap: wrap; }
+  .searchfield svg { top: .95rem; }
+
   input[type=search] {
-    flex: 1 1 auto;
+    flex: 1 1 6rem;
     /* The chip can be long, so the field must be allowed to shrink rather than
        pushing the input out of the box on a narrow screen. */
     min-width: 0;

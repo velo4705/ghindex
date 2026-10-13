@@ -1,129 +1,43 @@
+<div align="center">
+
 # ghindex
 
-Live search of [GitHub Pages](https://pages.github.com) sites. You type, and
-GitHub is asked directly; every result is link-checked as it appears.
+**GitHub IO Indexer -- A Normal Search Engine for GitHub IO Pages**
 
-The site is static files on GitHub Pages. There is no index behind it.
+**[Link to Search Engine](https://velo4705.github.io/ghindex)**
+
+</div>
 
 ## How it works
 
-```
-typing ──debounce──> browser ──> edge worker ──> GitHub search API
-                         │              │
-                         │              └── cache (isolate LRU + caches.default)
-                         │
-                         └──> link-check each result ──> edge worker ──> the site's host
-```
+Like a regular search engine, **Search anything you wanted**, just to look for some unique IO pages made by many open-source contributors. Tags are helpful if you can't think of searching something.
 
-Everything a visitor sees is requested at the moment they search. The page holds
-no data of its own, so there is nothing to refresh on a schedule, nothing to go
-stale, and no build step between a query and its answer.
+This uses a **Live Index** of GitHub IO Pages loaded from keywords or tags. Perhaps, you might be able to explore some niche IO pages that you are unfamiliar with.
 
-The edge worker exists to hold the GitHub token server-side. This project is
-served from `*.github.io`, which Cloudflare cannot sit in front of, so the worker
-lives on its own hostname and is called cross-origin — see
-`worker/README.md` for the caching measurements and the limits.
+The Search Engine has **two filters** - "Best Match" (default) and "Most stars", which appears after searching from a query.
 
-## Why there is no pre-built index
+Each index has a **status** whether the repository has a live IO page, or is a dead link. Each repository displays its star count, and those repositories only appear if they have a **IO page**, regardless of whether it is **live**, or at **404** (is struck-out anyway due to dead links). A third one, **blocks bots**, means the site refused the automated check - it will very likely still open fine in a browser, so don't take it for a dead link.
 
-There was one, and it was the wrong shape. A nightly harvest generated a sharded
-index, the page searched it locally, and the live GitHub search appeared
-underneath as a secondary "also on GitHub" group. Two problems with that:
+The page itself is hosted on **GitHub Pages**, but a browser can't hold a GitHub token, so the searching is done by a small **Cloudflare Worker** that keeps one for us.
 
-- **They disagreed.** The two halves were ranked differently and shown as one
-  result set, so a query routinely reported "0 matches" in the local half while
-  the live half below it had the answer.
-- **The local half was a worse sample of the same thing.** It was limited to the
-  topic shards the harvester happened to use, stale between runs, and cost
-  8 MB of generated HTML plus 2,059 per-site pages to maintain.
+### How do you search it?
 
-So there is one result set now and it is live. What that costs is stated plainly
-in `worker/README.md`: the edge holds one token, so the whole site shares a
-30/minute budget and the cache absorbs roughly half of it. **That ceiling does
-not scale.** It is fine at current traffic and is a hard wall at real traffic.
-It is the honest price of not shipping a snapshot.
+You can type anything straight into the search box, or pick tags underneath it if you can't think of what to type. The tags are just words, so picking "portfolio" and typing "resume" searches for both at once, and you can stack as many as you like - each one sits in the search box with an **×** to take it off again. Whatever combination you end up with is what gets searched.
 
-## The page
+Only repositories that actually have a **IO page** are ever shown, which is why some searches come back with fewer results than you might expect. And since GitHub refuses to go past **1,000 results** for any keyword, the page is split into **10 numbered pages** - it will always tell you the real total, even the part it can't reach.
 
-One centred search box, a line of help, a strip of topic chips, and results.
+### Why is it never cached?
 
-There is no navigation and no configuration. The chips collapse to a single line
-with an "all 83" expander, because showing all of them pushed the results a full
-screen down and made the picker the page's main content, which it is not.
+The reason of why we never cache GitHub IO Pages is due to its sheer count. Estimating around **7,000,000+ IO Pages** across GitHub, Caching every single repository is a bad idea due to a takeaway in storage.
 
-## Layout
+We implemented a **Dynamic Live Indexer** that appears when you are done typing. This type of Index fetches repositories that are **best matched** to the query.
 
-| Path | Purpose |
-| --- | --- |
-| `src/site/` | The static site. This is what Pages deploys. |
-| `src/site/app.js` | Search, the tag picker, and rendering. |
-| `src/site/github-search.js` | On-demand GitHub search and liveness checks. |
-| `src/site/taxonomy.js` | The curated topic list and the classifier. Runs in the browser. |
-| `worker/` | The edge worker: token, caching, liveness verdicts. |
-| `spike/` | The original feasibility investigation, kept for provenance. |
+However, this doesn't solve the ~7M Page showcase on GitHub, so we limited the maximum number of repositories using that keyword for the **first 1,000 repositories**, while it actually shows its true count of how many repositories found using that keyword. This doesn't mean we limit a lot of repositories, as niche ones can be found just by **broadening the search keyword** further.
 
-Every path lives in `src/paths.ts`, which now holds a single key: the site
-directory. The generated shards, per-site pages, report-link config and harvest
-pipeline are gone, and no path still points at them.
+### What about the rate limit?
 
-## Commands
+A browser can't hold a GitHub token, because anything in a static page is public. So the search goes through a small Cloudflare Worker that keeps one read-only token on the server side, which gets us 30 searches a minute instead of the anonymous 10. The catch is that the token belongs to the worker, so everyone shares that one budget rather than getting 30 each.
 
-```bash
-bun run serve          # dev server on :8099
-bun run test           # classifier + live search
-bun run test:all       # everything, including the browser check
-```
+Typing is debounced and results are cached at the edge, so searching the same thing twice costs nothing, but a burst of new terms from a lot of people at once can still hit the ceiling. When it does, the page says so instead of showing an empty result list.
 
-`bun run test:browser` starts its own dev server, so it works standalone. It
-needs a Chromium-family browser; set `CHROME_PATH` if it is somewhere unusual.
-
-## What the front end can and cannot do
-
-**The topic chips are keywords, not GitHub `topic:` qualifiers.** This was
-changed deliberately. A `topic:` qualifier restricts to repos carrying that exact
-topic, and once every result shares it, GitHub's default relevance ranking
-collapses into the star ranking — measured across all seven default tags, "best
-match" and "most stars" returned byte-identical results, so the ordering control
-did nothing at all on the path most visitors arrive by. Searching the tag as an
-ordinary keyword restores a real relevance order, and matches what someone
-clicking a topic picker means: repos that *are* portfolios, whether or not
-somebody tagged them.
-
-**A chip and the search box combine.** Picking "portfolio" then typing "resume"
-searches `portfolio resume`, which GitHub ANDs. Previously the two were
-either/or, and typing after choosing a tag silently discarded what had been
-typed. Clicking a chip's × removes just that keyword.
-
-**The list is curated, not complete.** GitHub has 11,677 distinct topics on this
-corpus and 72% appear exactly once, so a literal "all tags" would be 11,677
-buttons, most leading to one unrelated repo. The chips are the subset that
-describes what a site *is* rather than what it was built with, and a test asserts
-no technology-only tag is among them.
-
-**`has_pages` is a repository setting**, and it can be weeks out of date with
-reality — a project that moved to a custom domain still reports Pages enabled
-while serving nothing. That is why each result is link-checked separately, and
-why a verdict distinguishes `blocks bots` from `dead link`: a site refusing an
-automated request is not the same as a site that is down.
-
-**The fuzzy subsequence search is gone.** It lived in the local index's scorer.
-GitHub's own ranking is what orders results now, and `github-search.js` re-sorts
-by stars so long-tail sites are not buried under whatever GitHub ranked first.
-
-**There are no per-site pages and no sitemap.** The site's entire crawlable
-surface is one search page.
-
-## Guarantees enforced in CI
-
-- **No local index** — the front-end check fails if the page ever fetches a
-  manifest, a shard, or instantiates a search worker again.
-- **Correctness** — the classifier and the live search module are unit tested.
-- **Edge behaviour** — proxy allowlist, token fallback, cache absorption, and
-  liveness verdicts are tested with a stub cache and stubbed upstream.
-- **Shape** — the page is asserted to be one search box with one results
-  container. The star filter, preview grid and token field are all checked to be
-  *absent*, because each one puts chrome between the visitor and the box.
-- **The topic picker** — populated, collapsible to one line, no technology-only
-  tags, and selecting one does not expand it.
-- **Behaviour** — the UI is driven in a real headless browser: live results, tag
-  selection and clearing, link badges, and clearing the box.
+---

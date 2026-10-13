@@ -71,8 +71,18 @@ const state = {
   loading: false,
   inflight: null,
   lastQuery: "",
-  /** The tag currently selected in the picker, or "". */
-  tag: "",
+  /**
+   * The tags selected in the picker.
+   *
+   * A list rather than a single value: GitHub ANDs the terms, so two tags are
+   * a genuine narrowing ("portfolio" AND "resume") rather than one replacing the
+   * other. A single tag forced every extra click to discard the previous choice.
+   *
+   * Named `picked`, not `tags`: `state.tags` is the whole curated catalogue and
+   * has been since before this existed. Shadowing it made every tag look selected
+   * the moment this shipped.
+   */
+  picked: [],
   /** The full curated tag list, loaded once from taxonomy.js. */
   tags: null,
   /** Whether the picker is showing every tag or just the first few. */
@@ -150,27 +160,41 @@ function renderSortbar() {
 function renderSearchChip() {
   const host = $("searchchips");
   if (!host) return;
-  if (!state.tag) {
+  if (!state.picked.length) {
     host.innerHTML = "";
     return;
   }
+  // One chip per tag, each removable on its own. With several chosen, the label
+  // says how to undo the whole set at once, because clicking three separate ×
+  // buttons is the obvious thing to resent.
   host.innerHTML =
-    `<span class="searchchip">` +
-    `<span class="searchchip-label">${esc(state.tag)}</span>` +
-    `<button type="button" class="searchchip-x" aria-label="Remove the ${esc(state.tag)} keyword"` +
-    ` title="Remove the ${esc(state.tag)} keyword">×</button>` +
-    `</span>`;
+    state.picked
+      .map(
+        (t) =>
+          `<span class="searchchip">` +
+          `<span class="searchchip-label">${esc(t)}</span>` +
+          `<button type="button" class="searchchip-x" data-chip="${esc(t)}"` +
+          ` aria-label="Remove the ${esc(t)} keyword"` +
+          ` title="Remove the ${esc(t)} keyword">×</button>` +
+          `</span>`,
+      )
+      .join("") +
+    (state.picked.length > 1
+      ? `<button type="button" class="searchchips-clear"` +
+        ` aria-label="Remove all keywords">clear</button>`
+      : "");
 }
 
 /**
- * Drop the topic filter and search again with whatever text is in the field.
+ * Remove one keyword, or all of them, and search again.
  *
  * Focus is returned to the input because the button that was just pressed is
  * about to be removed from the DOM; leaving focus on a removed element drops it
  * to the document body and the next keystroke goes nowhere.
  */
-function clearTag() {
-  state.tag = "";
+function clearTag(tag) {
+  if (tag) state.picked = state.picked.filter((t) => t !== tag);
+  else state.picked = [];
   renderSearchChip();
   renderTagPicker();
   $("q").focus();
@@ -206,7 +230,7 @@ async function runSearch(opts = {}) {
   // Tag and text combine rather than replacing each other. `topic:` was
   // either/or, so typing after choosing a tag discarded what had been typed —
   // the first keystroke searched the topic and silently threw the input away.
-  const q = [state.tag, raw].filter(Boolean).join(" ");
+  const q = [...state.picked, raw].filter(Boolean).join(" ");
 
   if (!q) {
     resetSearch();
@@ -356,7 +380,7 @@ async function renderTagPicker() {
 
   host.innerHTML =
     shown
-      .map((t) => `<button type="button" class="tagbtn" data-tag="${esc(t)}" aria-pressed="${state.tag === t}">${esc(t)}</button>`)
+      .map((t) => `<button type="button" class="tagbtn" data-tag="${esc(t)}" aria-pressed="${state.picked.includes(t)}">${esc(t)}</button>`)
       .join("") +
     (all.length > TAGS_COLLAPSED
       ? `<button type="button" class="tagmore" id="tagmore" aria-expanded="${state.tagsOpen}">${
@@ -380,7 +404,11 @@ $("taglist").addEventListener("click", (e) => {
   const btn = e.target.closest(".tagbtn");
   if (!btn) return;
   const tag = btn.dataset.tag;
-  state.tag = state.tag === tag ? "" : tag;
+  // Toggles independently of the others, so tags accumulate instead of
+  // replacing one another.
+  state.picked = state.picked.includes(tag)
+    ? state.picked.filter((t) => t !== tag)
+    : [...state.picked, tag];
   renderSearchChip();
   renderTagPicker();
   runSearch({ fresh: true });
@@ -393,7 +421,9 @@ $("taglist").addEventListener("click", (e) => {
  * handler above, and it has to work while the picker is scrolled out of view.
  */
 $("searchchips").addEventListener("click", (e) => {
-  if (e.target.closest(".searchchip-x")) clearTag();
+  const x = e.target.closest(".searchchip-x");
+  if (x) return clearTag(x.dataset.chip);
+  if (e.target.closest(".searchchips-clear")) clearTag();
 });
 
 // ---------------------------------------------------------------- liveness
@@ -601,7 +631,13 @@ function summaryHtml() {
     const last = (state.page - 1) * 100 + n;
     bits.push(`results ${first.toLocaleString()}–${last.toLocaleString()}`);
   }
-  if (state.tag) bits.push(`keyword: ${state.tag}`);
+  if (state.picked.length) {
+    bits.push(
+      state.picked.length === 1
+        ? `keyword: ${state.picked[0]}`
+        : `keywords: ${state.picked.join(" and ")}`,
+    );
+  }
   if (state.total > n) {
     bits.push(
       `${state.total.toLocaleString()} repos match` +
