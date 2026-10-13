@@ -493,7 +493,8 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
 
   const summary = await evalJs(`document.querySelector('#results p.note')?.textContent ?? ''`);
   check("the summary says the results are live", /on this page/.test(summary), summary.slice(0, 70));
-  check("the summary names the topic being searched", new RegExp(tag).test(summary), summary.slice(0, 70));
+  check("the summary names the keyword being searched", new RegExp(tag).test(summary), summary.slice(0, 70));
+  check("and does not claim a topic filter", !/topic:/.test(summary), summary.slice(0, 90));
 
   // One result set. This is the check that matters most: the bug being guarded
   // against was two stacked groups, a local one usually saying "0 matches"
@@ -744,13 +745,80 @@ const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="li
     await evalJs(`document.activeElement?.id`) === "q",
     await evalJs(`document.activeElement?.id ?? 'none'`));
 
+  // ------------------------------------------- a tag is a keyword, not a topic
+
+  // A `topic:` qualifier makes every result share one topic, and GitHub's
+  // relevance ranking then collapses into the star ranking — measured across all
+  // seven default tags, "best match" and "most stars" returned identical bytes.
+  // So the tag must be sent as an ordinary keyword, and the request must actually
+  // differ between the two orderings.
+  const tagReq = await evalJs(`(async () => {
+    const out = {};
+    const grab = async (sort) => {
+      const r = await fetch(
+        'https://ghindex-search.ghindex.workers.dev/api/search' +
+        '?q=' + encodeURIComponent('portfolio') + '&page=1&per_page=100&sort=' + sort);
+      const j = await r.json();
+      return (j.items ?? []).filter(i => i.has_pages).slice(0, 5).map(i => i.full_name);
+    };
+    out.best = await grab('best');
+    out.stars = await grab('stars');
+    return JSON.stringify(out);
+  })()`);
+  const tr = JSON.parse(String(tagReq));
+  check("a keyword tag gives Best match and Most stars different results",
+    JSON.stringify(tr.best) !== JSON.stringify(tr.stars),
+    `best=${tr.best?.[0]} stars=${tr.stars?.[0]}`);
+
+  // The chip test above removed the tag, so choose one again before testing what
+  // happens when text is typed alongside it.
+  await evalJs(`document.querySelector('#taglist .tagbtn[aria-pressed=false]')?.click()`);
+  await waitFor(
+    evalJs,
+    `!/Searching/.test(document.getElementById('results').textContent) &&
+     document.querySelectorAll('#results .row').length > 0`,
+  );
+
+  // Tag and text must AND. Typing after choosing a tag used to discard the typed
+  // text entirely, because q was built before the tag was cleared.
+  await evalJs(`(() => {
+    const q = document.getElementById('q');
+    q.value = 'resume';
+    q.dispatchEvent(new Event('input', { bubbles: true }));
+    return 1;
+  })()`);
+  await waitFor(
+    evalJs,
+    `!/Searching/.test(document.getElementById('results').textContent) &&
+     document.querySelectorAll('#results .row').length > 0`,
+  );
+  const afterType = JSON.parse(String(await evalJs(`JSON.stringify({
+    // The chip must survive typing: the tag is now a filter, not a mode.
+    chip: (document.querySelector('.searchchip-label') || {}).textContent || '',
+    summary: document.querySelector('#results p.note')?.textContent ?? '',
+  })`)));
+  check("typing does not discard the selected tag", afterType.chip !== "",
+    `chip="${afterType.chip}"`);
+  check("and the summary still reports it", new RegExp(afterType.chip).test(afterType.summary),
+    afterType.summary.slice(0, 90));
+
+  // Back to a tag-only search for the ordering tests below.
+  await evalJs(`(() => {
+    const q = document.getElementById('q');
+    q.value = '';
+    q.dispatchEvent(new Event('input', { bubbles: true }));
+    return 1;
+  })()`);
+  await Bun.sleep(600);
+
   // ------------------------------------------------------------- result order
 
-  // The ordering control. It only makes sense once there is a query, so it is
-  // absent while there is nothing to order — which is the state the chip test
-  // above leaves the page in.
-  const sortWhenEmpty = await evalJs(`document.querySelectorAll('#sortbar .sortbtn').length`);
-  check("no ordering control with nothing to order", sortWhenEmpty === 0, `${sortWhenEmpty} buttons`);
+  // The ordering control. It only makes sense once there is a query, so it must
+  // be absent on arrival — checked in the arrival block above — and present here,
+  // now that a tag has been chosen.
+  const sortWithQuery = await evalJs(`document.querySelectorAll('#sortbar .sortbtn').length`);
+  check("the ordering control appears once there is a query",
+    sortWithQuery === 2, `${sortWithQuery} buttons`);
 
   await evalJs(`document.querySelectorAll('#taglist .tagbtn[aria-pressed=false]')[0]?.click()`);
   await Bun.sleep(600);

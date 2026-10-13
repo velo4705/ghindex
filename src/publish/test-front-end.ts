@@ -204,9 +204,17 @@ check(
 );
 
 // A picker tag must search by topic rather than as free text: "portfolio" as a
-// word matches every repo that mentions portfolios, while topic:portfolio is
+// word matches every repo that mentions portfolios, while a `topic:` qualifier
 // what someone clicking a topic picker is asking for.
-check("a selected tag becomes a topic query", /topic:\$\{state\.tag\}/.test(app));
+// A `topic:` qualifier made every result share one topic, at which point GitHub's
+// default relevance ranking *is* the star ranking — measured across all seven
+// default tags, "best match" and "most stars" returned byte-identical results. So
+// the ordering control did nothing on the path most visitors arrive by.
+check("no topic: qualifier is used for a tag", !/topic:\$\{/.test(app));
+check("the tag is combined with the typed text",
+  /\[state\.tag, raw\]\.filter\(Boolean\)\.join\(" "\)/.test(app),
+  "tag and text must AND, not replace each other");
+check("the summary no longer claims a topic filter", !/topic: \$\{/.test(app));
 
 // ------------------------------------------------------------- live path
 

@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "serve": "bun run serve.ts",
-    "reports": "bun run src/publish/reports.ts",
     "test": "bun run src/site/taxonomy-test.ts && bun run src/publish/test-wide-search.ts",
     "test:front-end": "bun run src/publish/test-front-end.ts",
     "test:worker": "bun run worker/test-worker.ts",

@@ -157,8 +157,8 @@ function renderSearchChip() {
   host.innerHTML =
     `<span class="searchchip">` +
     `<span class="searchchip-label">${esc(state.tag)}</span>` +
-    `<button type="button" class="searchchip-x" aria-label="Remove the ${esc(state.tag)} topic filter"` +
-    ` title="Remove the ${esc(state.tag)} topic filter">×</button>` +
+    `<button type="button" class="searchchip-x" aria-label="Remove the ${esc(state.tag)} keyword"` +
+    ` title="Remove the ${esc(state.tag)} keyword">×</button>` +
     `</span>`;
 }
 
@@ -184,29 +184,31 @@ function clearTag() {
  * page 4 costs the same single request as arriving on page 1 — see
  * `searchGitHub` for why it used to cost three.
  *
- * A selected tag becomes `topic:<tag>` rather than free text. GitHub's topic
- * qualifier is exact, so this searches for repos that carry that tag rather
- * than for repos that merely mention the word — which is what someone clicking
- * "portfolio" in a topic picker is asking for.
+ * A selected tag is prepended to whatever has been typed and searched as an
+ * ordinary keyword. See the note on building `q` below for why it is not a
+ * GitHub `topic:` qualifier.
  */
 async function runSearch(opts = {}) {
   const raw = $("q").value.trim();
-  const q = state.tag ? `topic:${state.tag}` : raw;
+
+  // A tag is a keyword, not a GitHub `topic:` qualifier.
+  //
+  // `topic:portfolio` restricts to repos carrying that exact topic, and every
+  // result then shares it — at which point GitHub's default relevance ranking
+  // *is* the star ranking. Measured across the seven default tags, a
+  // `topic:`-qualified search returned byte-identical results for "best match"
+  // and "most stars", so the ordering control did nothing at all on the path
+  // most visitors arrive by. Searching the tag as an ordinary keyword restores a
+  // genuinely different relevance order, and matches what people mean by
+  // "show me portfolios": repos that are portfolios, whether or not somebody
+  // tagged them.
+  //
+  // Tag and text combine rather than replacing each other. `topic:` was
+  // either/or, so typing after choosing a tag discarded what had been typed —
+  // the first keystroke searched the topic and silently threw the input away.
+  const q = [state.tag, raw].filter(Boolean).join(" ");
 
   if (!q) {
-    resetSearch();
-    renderResults();
-    return;
-  }
-
-  // Typing clears a selected tag: the visitor has moved on to a text query, and
-  // silently keeping the tag would ignore what they just typed.
-  if (raw && state.tag) {
-    state.tag = "";
-    renderSearchChip();
-    renderTagPicker();
-  }
-  if (!raw && !state.tag) {
     resetSearch();
     renderResults();
     return;
@@ -599,7 +601,7 @@ function summaryHtml() {
     const last = (state.page - 1) * 100 + n;
     bits.push(`results ${first.toLocaleString()}–${last.toLocaleString()}`);
   }
-  if (state.tag) bits.push(`topic: ${state.tag}`);
+  if (state.tag) bits.push(`keyword: ${state.tag}`);
   if (state.total > n) {
     bits.push(
       `${state.total.toLocaleString()} repos match` +

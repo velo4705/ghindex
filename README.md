@@ -62,13 +62,14 @@ screen down and made the picker the page's main content, which it is not.
 | `worker/` | The edge worker: token, caching, liveness verdicts. |
 | `spike/` | The original feasibility investigation, kept for provenance. |
 
-Every path lives in `src/paths.ts`.
+Every path lives in `src/paths.ts`, which now holds a single key: the site
+directory. The generated shards, per-site pages, report-link config and harvest
+pipeline are gone, and no path still points at them.
 
 ## Commands
 
 ```bash
 bun run serve          # dev server on :8099
-bun run reports        # rewrite the report-link config
 bun run test           # classifier + live search
 bun run test:all       # everything, including the browser check
 ```
@@ -78,10 +79,20 @@ needs a Chromium-family browser; set `CHROME_PATH` if it is somewhere unusual.
 
 ## What the front end can and cannot do
 
-**The topic chips search `topic:<tag>`**, not the free text. GitHub's topic
-qualifier is exact, so picking "portfolio" finds repos that carry that tag
-rather than every repo that mentions portfolios — which is what someone clicking
-a topic picker is asking for. Clicking the selected chip clears it.
+**The topic chips are keywords, not GitHub `topic:` qualifiers.** This was
+changed deliberately. A `topic:` qualifier restricts to repos carrying that exact
+topic, and once every result shares it, GitHub's default relevance ranking
+collapses into the star ranking — measured across all seven default tags, "best
+match" and "most stars" returned byte-identical results, so the ordering control
+did nothing at all on the path most visitors arrive by. Searching the tag as an
+ordinary keyword restores a real relevance order, and matches what someone
+clicking a topic picker means: repos that *are* portfolios, whether or not
+somebody tagged them.
+
+**A chip and the search box combine.** Picking "portfolio" then typing "resume"
+searches `portfolio resume`, which GitHub ANDs. Previously the two were
+either/or, and typing after choosing a tag silently discarded what had been
+typed. Clicking a chip's × removes just that keyword.
 
 **The list is curated, not complete.** GitHub has 11,677 distinct topics on this
 corpus and 72% appear exactly once, so a literal "all tags" would be 11,677
@@ -101,12 +112,6 @@ by stars so long-tail sites are not buried under whatever GitHub ranked first.
 
 **There are no per-site pages and no sitemap.** The site's entire crawlable
 surface is one search page.
-
-## Reporting and submissions
-
-The site is static, so there is no backend to receive submissions. "Report
-problem" and "Claim / submit" on each result open a pre-filled GitHub issue.
-Point reports at your own fork with `REPORT_REPO=owner/repo`.
 
 ## Guarantees enforced in CI
 
