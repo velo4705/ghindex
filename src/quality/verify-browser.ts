@@ -685,6 +685,44 @@ check(
 const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`);
   check("liveness badges are rendered", pills > 0, `${pills} badges`);
 
+// The badge belongs last. Its labels range from "live" to "blocks bots", and when
+// one led the row every title started at a different x - 56px of raggedness
+// measured between the shortest and longest label - on the one column a reader is
+// actually scanning. Both edges should line up instead.
+const badgeAlign = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+  const labels = ['live', 'dead link', 'blocks bots', 'checking\u2026', 'unverified'];
+  const h3 = document.querySelector('#results .row h3');
+  const link = h3 && h3.querySelector('a');
+  if (!h3 || !link) return { missing: true };
+  const saved = h3.querySelector('[class*="live-"]');
+  const wasClass = saved && saved.className;
+  const wasText = saved && saved.textContent;
+  const titles = [], badges = [];
+  for (const label of labels) {
+    let pill = h3.querySelector('[class*="live-"]');
+    if (!pill) { pill = document.createElement('span'); h3.appendChild(pill); }
+    pill.className = 'pill live-alive';
+    pill.textContent = label;
+    titles.push(Math.round(link.getBoundingClientRect().left));
+    badges.push(Math.round(pill.getBoundingClientRect().right));
+  }
+  if (saved) { saved.className = wasClass; saved.textContent = wasText; }
+  return {
+    missing: false,
+    titleSpread: Math.max.apply(null, titles) - Math.min.apply(null, titles),
+    badgeSpread: Math.max.apply(null, badges) - Math.min.apply(null, badges),
+    // The title must also come before the badge in the DOM, not merely be pushed
+    // there by a margin.
+    titleFirst: !!(h3.firstElementChild && h3.firstElementChild.tagName === 'A'),
+  };
+})())`)));
+check("a live badge exists to align", badgeAlign.missing === false);
+check("titles keep one left edge whatever the badge says",
+  badgeAlign.titleSpread === 0, `${badgeAlign.titleSpread}px spread`);
+check("badges keep one right edge whatever they say",
+  badgeAlign.badgeSpread === 0, `${badgeAlign.badgeSpread}px spread`);
+check("and the title comes before the badge in the row", badgeAlign.titleFirst === true);
+
   // --------------------------------------------------------- topic chip in field
 
   // Selecting a topic has to show up inside the search field, not only as a

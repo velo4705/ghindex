@@ -546,6 +546,15 @@ function starBadge(r) {
     : "";
 }
 
+/**
+ * One result row.
+ *
+ * The live badge is last, not first. The badge labels vary in width — "live"
+ * against "blocks bots" — so leading with it pushed every title to a different
+ * x by up to 56px depending on the row's state, and the title is what a reader
+ * scans. Titles now share one left edge and the badges collect at the right,
+ * where both columns line up.
+ */
 function rowHtml(r) {
   const href = safeUrl(r.url);
   if (!href) return "";
@@ -555,7 +564,7 @@ function rowHtml(r) {
     .map((g) => `<span class="tag">${esc(g)}</span>`)
     .join("");
   return `<article class="row" data-live="${esc(href)}">
-    <h3>${livePillHtml(href)}<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>${starBadge(r)}</h3>
+    <h3><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>${starBadge(r)}${livePillHtml(href)}</h3>
     <div class="url">${esc(href)}</div>
     ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ""}
     ${tags ? `<div class="tags">${tags}</div>` : ""}

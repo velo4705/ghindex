@@ -773,6 +773,11 @@
     gap: .35rem;
     flex-wrap: wrap;
   }
+  /* The live badge hugs the right edge of the row. Being last in the markup only
+     puts it after the star count; this makes it a right-hand column of its own,
+     so badges line up across rows just as the titles now do on the left. */
+  .row h3 [class*="live-"] { margin-left: auto; }
+
   .row h3 a {
     text-decoration: none;
     /* A long owner/repo is the common case, not the exception, so it is allowed
