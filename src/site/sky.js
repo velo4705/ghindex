@@ -19,12 +19,17 @@
  * Tuning
  * ------
  * The brief was sparse: mostly isolated points, a handful of faint links, the
- * whole field drifting slowly. particles.js links anything within
+ * whole field drifting. particles.js links anything within
  * `line_linked.distance`, so that number is what turns a dense web into a
- * night sky — at 30px almost nothing joins, which is the look wanted. Speed is
- * low for the same reason: a fast particle crosses the link radius in a
- * fraction of a second, and links that flicker on and off read as noise rather
- * than as constellations.
+ * night sky — at 30px almost nothing joins, which is the look wanted.
+ *
+ * Speed is the other half of that. It was originally 0.18, on the theory that a
+ * slow point keeps links from strobing — but that measured out at about a pixel
+ * a second, which reads as a still image rather than a sky. Raising it showed
+ * the worry was unfounded: with only a few dozen points and a 30-50px link
+ * radius, the link count sits between two and six at every speed tried, so
+ * there was never churn to protect against. 2 puts a point at roughly 25px a
+ * second — plainly drifting, and still unhurried.
  */
 
 const SKY_ID = "sky";
@@ -66,7 +71,7 @@ const options = () => {
       line_joined: false,
       move: {
         enable: true,
-        speed: 0.18,
+        speed: 2,
         direction: "random",
         random: true,
         straight: false,
@@ -142,8 +147,39 @@ export function startSky() {
   document.head.appendChild(el);
 }
 
-/** Rebuild for a theme change: the stars are the text colour, so they must follow it. */
-export function refreshSky() {
-  if (!isRunning()) return;
-  build();
+/**
+ * Repaint the running field in a new colour, without rebuilding it.
+ *
+ * The obvious implementation — tear the field down and make a new one — is
+ * wrong, and visibly so: it discards every particle's position and velocity, so
+ * the whole sky jumps and restarts on each click of a control the reader is
+ * likely to press more than once. Instead the library reads `color.rgb` off
+ * each particle inside its per-frame draw, so writing the new colour straight
+ * onto the live particles takes effect on the next frame and the drift carries
+ * on undisturbed.
+ */
+export function retintSky() {
+  const list = window.pJSDom;
+  const p = list && list.length ? list[list.length - 1].pJS : null;
+  if (!p) return;
+  const ink = skyInk();
+  const rgb = toRgb(ink);
+  p.particles.color.value = ink;
+  p.particles.array.forEach((q) => {
+    q.color.value = ink;
+    q.color.rgb = rgb;
+  });
+  // Links are painted from a single value computed once at startup, so it has
+  // to be rewritten as well or the lines would keep the old theme's colour.
+  p.particles.line_linked.color = ink;
+  p.particles.line_linked.color_rgb_line = rgb;
+}
+
+/** `#abc` / `#aabbcc` to the {r,g,b} the canvas wants. */
+function toRgb(hex) {
+  let h = String(hex).trim().replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = Number.parseInt(h, 16);
+  if (!Number.isFinite(n)) return { r: 255, g: 255, b: 255 };
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }

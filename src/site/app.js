@@ -22,7 +22,7 @@
 
 const $ = (id) => document.getElementById(id);
 
-import { startSky, refreshSky } from "./sky.js";
+import { startSky, retintSky } from "./sky.js";
 
 /**
  * Debounce before asking GitHub.
@@ -764,60 +764,81 @@ $("sortbar").addEventListener("click", (e) => {
 /**
  * Manual theme override.
  *
- * The page follows the system by default and keeps doing so until someone says
- * otherwise. A plain two-state switch would strand anyone who wanted "auto"
- * back — there would be nowhere to go but to clear site data — so this cycles
- * auto -> light -> dark -> auto instead.
+ * The page follows the system until someone says otherwise. The control is a
+ * two-state switch rather than a three-state cycle, and the reason is arithmetic
+ * rather than taste: "auto" always looks identical to whichever of light or dark
+ * the system is already showing, so a cycle through all three can only ever have
+ * one step that changes nothing. Whichever way round you order it, the reader
+ * gets a click that does not appear to do anything. Two states, and every click
+ * turns the page the other colour.
  *
- * The stylesheet does the actual work: `[data-theme]` on <html> wins, and its
+ * Handing control back to the system is still possible, and is folded into the
+ * same click: when the pinned theme already matches what the system would show,
+ * the next click drops the pin. That step looks like a no-op in colour, but the
+ * control changes to the monitor icon and says so in its label, so it is a
+ * visible, named state rather than a dead click.
+ *
+ * The stylesheet does the colour work: `[data-theme]` on <html> wins, and its
  * *absence* is what lets the system media query in. Both branches are restated
  * there because CSS cannot express "this, and also when that attribute is set".
  */
 const THEME_KEY = "ghindex-theme";
-const THEMES = ["auto", "light", "dark"];
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
-const themeIs = (v) => (v === "light" || v === "dark" ? v : "auto");
-const currentTheme = () => themeIs(document.documentElement.getAttribute("data-theme"));
+/** What the page is showing right now, whatever decided it. */
+const shownDark = () => {
+  const pinned = document.documentElement.getAttribute("data-theme");
+  if (pinned === "dark") return true;
+  if (pinned === "light") return false;
+  return darkQuery.matches;
+};
 
 function readStoredTheme() {
   try {
-    return themeIs(localStorage.getItem(THEME_KEY));
+    const v = localStorage.getItem(THEME_KEY);
+    return v === "dark" || v === "light" ? v : null;
   } catch {
     // Storage can be blocked outright in private modes. Following the system is
     // a perfectly good answer, so a refusal is not worth surfacing.
-    return "auto";
+    return null;
   }
 }
 
 function applyTheme(theme) {
   const root = document.documentElement;
-  if (theme === "auto") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", theme);
+  if (theme) root.setAttribute("data-theme", theme);
+  else root.removeAttribute("data-theme");
 
   // The two theme-color metas are media-gated, which is exactly right before
   // this runs and wrong the moment a person overrides the system, so one is
   // enabled and the other muted.
-  const dark = theme === "dark" || (theme === "auto" && darkQuery.matches);
+  const dark = shownDark();
   document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
     m.setAttribute("media", m.dataset.scheme === (dark ? "dark" : "light") ? "all" : "not all");
   });
 
   const btn = $("themetoggle");
   if (btn) {
-    const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
-    btn.setAttribute("aria-label", `Theme: ${theme}. Switch to ${next}.`);
+    btn.setAttribute(
+      "aria-label",
+      theme
+        ? `Theme: ${theme}. Switch to ${dark ? "light" : "dark"}.`
+        : `Following your system: ${dark ? "dark" : "light"}. Switch to ${dark ? "light" : "dark"}, or keep following.`,
+    );
   }
-  // The stars are painted in the theme's own text colour, so a theme change has
-  // to rebuild the field — otherwise dark stars sit on a light page.
-  refreshSky();
+  // The stars are painted in the theme's own text colour. This repaints them in
+  // place; rebuilding the field here would restart the drift on every click.
+  retintSky();
 }
 
 $("themetoggle")?.addEventListener("click", () => {
-  const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+  const pinned = document.documentElement.getAttribute("data-theme");
+  // Already showing what the reader is asking for, so hand the page back to the
+  // system instead of toggling to a colour that is already on screen.
+  const next = pinned && shownDark() === (pinned === "dark") ? null : shownDark() ? "light" : "dark";
   try {
-    if (next === "auto") localStorage.removeItem(THEME_KEY);
-    else localStorage.setItem(THEME_KEY, next);
+    if (next) localStorage.setItem(THEME_KEY, next);
+    else localStorage.removeItem(THEME_KEY);
   } catch {
     // Unpersistable, but the override still applies for this page view.
   }
@@ -827,7 +848,7 @@ $("themetoggle")?.addEventListener("click", () => {
 // Following the system has to mean following it live, or someone who sets their
 // OS to dark at sunset watches this page stay light.
 darkQuery.addEventListener("change", () => {
-  if (currentTheme() === "auto") applyTheme("auto");
+  if (!document.documentElement.getAttribute("data-theme")) applyTheme(null);
 });
 
 // ---------------------------------------------------------------- boot

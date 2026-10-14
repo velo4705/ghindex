@@ -480,8 +480,10 @@ async function runChecks(browser: string) {
       field.linkRatio > 0 && field.linkRatio < 0.06, `ratio=${field.linkRatio.toFixed(3)}`);
     check("each star is a point rather than a disc",
       field.medianR > 0.5 && field.medianR <= 4, `median radius ${field.medianR?.toFixed(2)}px`);
-    check("and the drift is slow, so links do not flicker on and off",
-      field.speed > 0 && field.speed <= 0.5, `speed=${field.speed}`);
+    // It was 0.18 once, which measured at about a pixel a second and read as a
+    // still image. The point is that it is visibly moving, not that it is slow.
+    check("and the field is set to a speed a reader can actually see",
+      field.speed >= 1, `speed=${field.speed}`);
 
     const before = field.pos;
     await Bun.sleep(2200);
@@ -586,6 +588,50 @@ async function runChecks(browser: string) {
   check("and the stars really did change colour, not merely stay consistent",
     afterSwap?.ink?.toLowerCase() !== beforeSwap?.ink?.toLowerCase(),
     `${beforeSwap?.ink} -> ${afterSwap?.ink}`);
+
+  // Every click must turn the page the other colour. A three-state cycle
+  // through {auto, light, dark} cannot manage this: "auto" always looks the
+  // same as whichever explicit state matches the system, so one step of the
+  // cycle was always a dead click — two clicks to reach light, one to get back.
+  // Click and read in one evaluate: splitting them lets a navigation or a
+  // re-created context sit between the click and the reading of its result.
+  const seq: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    seq.push(String(await evalJs(`JSON.stringify((() => {
+      document.getElementById('themetoggle')?.click();
+      return {
+        attr: document.documentElement.getAttribute('data-theme'),
+        bg: getComputedStyle(document.body).backgroundColor,
+      };
+    })())`)).replace(/[{}"]/g, ""));
+    await Bun.sleep(400);
+  }
+  const seen = seq.map((s) => (s.match(/bg:([^,]+)/)?.[1] ?? "?").trim());
+  const deadSteps = seen.slice(1).filter((c, i) => c === seen[i]).length;
+  check("every click turns the page the other colour",
+    deadSteps === 0, `${deadSteps} of 4 clicks changed nothing: ${seen.join(" -> ")}`);
+
+  // A theme change must not restart the star field. Rebuilding it discards
+  // every particle's position and velocity, so the sky visibly jumps each time
+  // a control the reader may press several times is used. The library reads
+  // colour per frame, so the right answer is to repaint the running particles.
+  const motionBefore = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+    const p = window.pJSDom[0].pJS.particles.array[0];
+    return { x: p.x, y: p.y, vx: p.vx, vy: p.vy };
+  })())`)));
+  await Bun.sleep(600);
+  await evalJs(`document.getElementById('themetoggle')?.click(); return 1`);
+  await Bun.sleep(120);
+  const motionAfter = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+    const p = window.pJSDom[0].pJS.particles.array[0];
+    return { x: p.x, y: p.y, vx: p.vx, vy: p.vy };
+  })())`)));
+  const jump = Math.hypot(motionAfter.x - motionBefore.x, motionAfter.y - motionBefore.y);
+  check("a theme change does not teleport a star",
+    jump < 80, `moved ${jump.toFixed(0)}px across the click`);
+  check("it keeps the same drift instead of re-rolling it",
+    motionAfter.vx === motionBefore.vx && motionAfter.vy === motionBefore.vy,
+    `v ${motionBefore.vx.toFixed(3)},${motionBefore.vy.toFixed(3)} -> ${motionAfter.vx.toFixed(3)},${motionAfter.vy.toFixed(3)}`);
 
   // Both of these were wrong at once and looked like one problem: the mesh was
   // boxed into the hero instead of the viewport, and the toggle bar inherited a
