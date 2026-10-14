@@ -22,6 +22,8 @@
 
 const $ = (id) => document.getElementById(id);
 
+import { startSky, refreshSky } from "./sky.js";
+
 /**
  * Debounce before asking GitHub.
  *
@@ -806,6 +808,9 @@ function applyTheme(theme) {
     const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
     btn.setAttribute("aria-label", `Theme: ${theme}. Switch to ${next}.`);
   }
+  // The stars are painted in the theme's own text colour, so a theme change has
+  // to rebuild the field — otherwise dark stars sit on a light page.
+  refreshSky();
 }
 
 $("themetoggle")?.addEventListener("click", () => {
@@ -829,3 +834,4 @@ darkQuery.addEventListener("change", () => {
 
 applyTheme(readStoredTheme());
 renderTagPicker();
+startSky();

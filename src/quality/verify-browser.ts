@@ -401,58 +401,95 @@ async function runChecks(browser: string) {
   check("no preview toggle", chrome?.view === false);
   check("no token field", chrome?.token === false);
 
-  // ---------------------------------------------------------- constellation
+  // -------------------------------------------------------------- star field
 
-  // The drifting mesh behind the title. The failure that matters is not that it
-  // is missing but that it is *on top*: it is absolutely positioned, and an
-  // absolutely positioned box paints above in-flow siblings. Only a hit test at
-  // the wordmark proves the text is still the thing a reader sees.
-  const sky = await evalJs(`(() => {
-    const s = document.querySelector('.constellation');
-    if (!s) return { present: false };
-    const c = getComputedStyle(s);
+  // particles.js draws to a canvas, so there is no markup to count any more.
+  // Everything below reads the live instance instead — which is the better
+  // assertion anyway, because it reports what is actually being drawn rather
+  // than what the source says should be.
+  const inst = () => evalJs(`JSON.stringify((() => {
+    const host = document.getElementById('sky');
+    if (!host) return { present: false };
+    const c = getComputedStyle(host);
     const h1 = document.querySelector('h1');
     const b = h1.getBoundingClientRect();
     const top = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+    const p = window.pJSDom && window.pJSDom[0] && window.pJSDom[0].pJS;
+    if (!p) return { present: true, canvas: !!host.querySelector('canvas'), titleOnTop: !!top && top.tagName === 'H1', aria: host.getAttribute('aria-hidden'), pointer: c.pointerEvents, zIndex: c.zIndex, w: Math.round(host.getBoundingClientRect().width), h: Math.round(host.getBoundingClientRect().height), built: false };
+    const arr = p.particles.array;
+    const d = p.particles.line_linked.distance;
+    let links = 0;
+    for (let i = 0; i < arr.length; i++)
+      for (let j = i + 1; j < arr.length; j++) {
+        const dx = arr[i].x - arr[j].x, dy = arr[i].y - arr[j].y;
+        if (dx * dx + dy * dy <= d * d) links++;
+      }
     return {
-      present: true,
-      aria: s.getAttribute('aria-hidden'),
+      present: true, built: true,
+      canvas: !!host.querySelector('canvas'),
+      aria: host.getAttribute('aria-hidden'),
       pointer: c.pointerEvents,
       zIndex: c.zIndex,
-      animation: c.animationName,
-      opacity: c.opacity,
+      mainZ: getComputedStyle(document.querySelector('main')).zIndex,
+      w: Math.round(host.getBoundingClientRect().width),
+      h: Math.round(host.getBoundingClientRect().height),
+      vw: window.innerWidth, vh: window.innerHeight,
+      stars: arr.length, links,
+      lineOpacity: p.particles.line_linked.opacity,
+      linkRatio: d / Math.min(window.innerWidth, window.innerHeight),
+      speed: p.particles.move.speed,
+      ink: p.particles.color.value,
+      cssInk: getComputedStyle(document.documentElement).getPropertyValue('--fg').trim(),
+      medianR: (() => { const r = arr.map(x => x.radius).sort((a, b) => a - b); return r.length ? r[r.length >> 1] : 0; })(),
+      pos: arr.slice(0, 6).map(x => [Math.round(x.x), Math.round(x.y)]),
       titleOnTop: !!top && top.tagName === 'H1',
     };
-  })()`);
-  check("a constellation sits behind the title", sky?.present === true);
+  })())`);
+
+  const sky = JSON.parse(String(await inst()));
+  check("a star field sits behind the title", sky?.present === true);
   check("it is decorative only, so it is hidden from assistive tech",
     sky?.aria === "true", `aria-hidden=${sky?.aria}`);
   check("and cannot swallow a click meant for the search box",
     sky?.pointer === "none", `pointer-events=${sky?.pointer}`);
-  check("it drifts rather than sitting still", sky?.animation === "drift", `animation=${sky?.animation}`);
-  check("it stays faint", Number(sky?.opacity) <= 0.12, `opacity=${sky?.opacity}`);
-  // A 64s cycle drifting 1.6% measured 8px over nine seconds, which is not
-  // motion a reader can see. Both bounds are read out of the keyframes rather
-  // than sampled from a running transform: a transform sampled at one instant
-  // reads identity at the top of the cycle, so the value would depend on when
-  // the check happened to run and would pass or fail on nothing.
-  const motion = await evalJs(`(() => {
-    const css = [...document.querySelectorAll('style')].map(s => s.textContent).join('\\n');
-    const block = css.match(/@keyframes\\s+drift\\s*\\{([\\s\\S]*?)\\n\\s*\\}/);
-    if (!block) return { found: false };
-    const secs = parseFloat(getComputedStyle(document.querySelector('.constellation')).animationDuration);
-    const x = [...block[1].matchAll(/translate3d\\(\\s*(-?[\\d.]+)%/g)].map(m => Math.abs(+m[1]));
-    const y = [...block[1].matchAll(/translate3d\\([^,]+,\\s*(-?[\\d.]+)%/g)].map(m => Math.abs(+m[1]));
-    return { found: true, secs, xPct: x.length ? Math.max(...x) : 0, yPct: y.length ? Math.max(...y) : 0 };
-  })()`);
-  check("the drift keyframes exist to be read", motion?.found === true);
-  check("the drift cycle is short enough to actually read as movement",
-    (motion?.secs ?? 99) <= 40, `${motion?.secs}s`);
-  check("and it covers real ground in that time",
-    Math.max(motion?.xPct ?? 0, motion?.yPct ?? 0) >= 3,
-    `max travel ${motion?.xPct}% x / ${motion?.yPct}% y`);
-  check("and the wordmark is still the topmost thing over it",
-    sky?.titleOnTop === true, "the mesh is painting over the title");
+  check("it fills the viewport rather than just the hero",
+    sky?.built && sky?.w >= (sky?.vw ?? 0) - 1 && sky?.h >= (sky?.vh ?? 0) - 1,
+    `${sky?.w}x${sky?.h} vs ${sky?.vw}x${sky?.vh}`);
+  check("and content is layered above it, not under it",
+    Number(sky?.mainZ) > Number(sky?.zIndex), `main=${sky?.mainZ} sky=${sky?.zIndex}`);
+  check("the wordmark is still the topmost thing over it",
+    sky?.titleOnTop === true, "the field is painting over the title");
+
+  // The library is deferred, so it may not have landed yet on a slow machine.
+  // Waiting here rather than failing turns a race into a short wait.
+  if (!sky?.built) await waitFor(evalJs, `(window.pJSDom && window.pJSDom[0] && window.pJSDom[0].pJS) ? true : false`, 15000);
+  const field = JSON.parse(String(await inst()));
+  check("particles.js loaded and built the field", field?.built === true, `canvas=${field?.canvas}`);
+  if (field?.built) {
+    check("the stars are painted in the theme's own text colour",
+      field.ink?.toLowerCase() === field.cssInk?.toLowerCase(), `ink=${field.ink} css=${field.cssInk}`);
+    check("the lines stay almost subliminal",
+      field.lineOpacity <= 0.2, `line opacity=${field.lineOpacity}`);
+    // The reference this was built to match is a night sky, not a web: almost
+    // every point is on its own. Counting real pairs inside the link radius
+    // measures the thing that decides that, rather than trusting a config value.
+    check("most stars are unconnected, rather than a dense mesh",
+      field.stars > 0 && field.links < field.stars / 2,
+      `${field.stars} stars, ${field.links} links`);
+    check("the link radius stays small relative to the frame",
+      field.linkRatio > 0 && field.linkRatio < 0.06, `ratio=${field.linkRatio.toFixed(3)}`);
+    check("each star is a point rather than a disc",
+      field.medianR > 0.5 && field.medianR <= 4, `median radius ${field.medianR?.toFixed(2)}px`);
+    check("and the drift is slow, so links do not flicker on and off",
+      field.speed > 0 && field.speed <= 0.5, `speed=${field.speed}`);
+
+    const before = field.pos;
+    await Bun.sleep(2200);
+    const after = JSON.parse(String(await inst())).pos;
+    const moved = before.some((p, i) => p[0] !== after?.[i]?.[0] || p[1] !== after?.[i]?.[1]);
+    check("and the field is actually drifting", moved === true,
+      `${JSON.stringify(before?.[0])} -> ${JSON.stringify(after?.[0])}`);
+  }
 
   // ----------------------------------------------------------- theme toggle
 
@@ -514,30 +551,57 @@ async function runChecks(browser: string) {
   })()`);
   check("the toggle never sits on top of the search box", bar?.overlap === false);
 
+  // The stars are painted in the theme's own text colour, so a theme change has
+  // to rebuild the field. `particlesJS()` returns nothing, so the rebuild hangs
+  // off `window.pJSDom`; when that handle was wrong the guard on refresh made
+  // every theme change a silent no-op and dark stars sat on a light page.
+  const repaint = async () => JSON.parse(String(await evalJs(`JSON.stringify({
+    ink: (window.pJSDom || [])[0]?.pJS?.particles?.color?.value || null,
+    css: getComputedStyle(document.documentElement).getPropertyValue('--fg').trim(),
+    canvases: document.querySelectorAll('#sky canvas').length,
+  })`)));
+  await send("Page.navigate", { url: BASE + "/index.html" });
+  await Bun.sleep(2200);
+  const beforeSwap = await repaint();
+  check("the field is running before the swap", beforeSwap?.ink !== null, `ink=${beforeSwap?.ink}`);
+  // One click is not enough: on a light system the first click only pins "auto"
+  // to "light", which looks identical and would pass even with a broken rebuild.
+  // Click to whichever of light/dark is not already showing.
+  await evalJs(`(() => {
+    const btn = document.getElementById('themetoggle');
+    const dark = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    for (let i = 0; i < 3; i++) {
+      btn.click();
+      if (getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() !== dark) break;
+    }
+    return 1;
+  })()`);
+  await Bun.sleep(1600);
+  const afterSwap = await repaint();
+  check("switching theme repaints the stars in the new colour",
+    afterSwap?.ink?.toLowerCase() === afterSwap?.css?.toLowerCase(),
+    `ink=${afterSwap?.ink} css=${afterSwap?.css}`);
+  check("and the old field is torn down rather than left running",
+    afterSwap?.canvases === 1, `${afterSwap?.canvases} canvases`);
+  check("and the stars really did change colour, not merely stay consistent",
+    afterSwap?.ink?.toLowerCase() !== beforeSwap?.ink?.toLowerCase(),
+    `${beforeSwap?.ink} -> ${afterSwap?.ink}`);
+
   // Both of these were wrong at once and looked like one problem: the mesh was
   // boxed into the hero instead of the viewport, and the toggle bar inherited a
   // 1200px max-width that parked it in the middle of a wide screen.
-  const span = await evalJs(`(() => {
-    const sky = document.querySelector('.constellation');
+  // The mesh checks live with the star field above, against the live instance.
+  // What remains here is the theme bar, which had the same "locked in the
+  // middle" fault: a max-width on the bar boxed the button into a wide screen.
+  const span = await evalJs(`JSON.stringify((() => {
     const bar = document.querySelector('.themebar');
-    const row = document.querySelector('#results .row');
     return {
-      skyW: Math.round(sky ? sky.getBoundingClientRect().width : 0),
-      skyPos: sky ? getComputedStyle(sky).position : '',
-      skyZ: sky ? getComputedStyle(sky).zIndex : '',
-      mainZ: getComputedStyle(document.querySelector('main')).zIndex,
-      barW: Math.round(bar ? bar.getBoundingClientRect().width : 0),
+      barW: bar ? Math.round(bar.getBoundingClientRect().width) : 0,
       btnRight: Math.round(document.getElementById('themetoggle').getBoundingClientRect().right),
       vw: window.innerWidth,
-      hasRows: !!row,
     };
-  })()`);
-  check("the mesh fills the viewport, not just the hero",
-    span?.skyPos === "fixed" && span?.skyW >= (span?.vw ?? 0) - 1,
-    `position=${span?.skyPos} width=${span?.skyW} viewport=${span?.vw}`);
-  check("and content sits above the mesh, not under it",
-    Number(span?.mainZ) > Number(span?.skyZ), `main=${span?.mainZ} mesh=${span?.skyZ}`);
-  check("the theme bar spans the full width too",
+  })())`).then((r) => JSON.parse(String(r)));
+  check("the theme bar spans the full width",
     span?.barW === span?.vw, `bar=${span?.barW} viewport=${span?.vw}`);
   check("and the toggle is parked in the actual corner",
     (span?.btnRight ?? 0) >= (span?.vw ?? 0) - 24, `right=${span?.btnRight} viewport=${span?.vw}`);
