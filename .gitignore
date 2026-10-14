@@ -15,3 +15,13 @@ Thumbs.db
 # Local env
 .env
 .env.local
+
+# Cloudflare Wrangler. `.wrangler/` is local dev state; `.dev.vars` is the
+# secrets file `wrangler dev` reads. The deployed GitHub token belongs in the
+# worker's own secret store, never in a file here — see worker/wrangler.jsonc.
+.wrangler/
+.dev.vars
+
+# Agent tooling. Note this only affects untracked files: anything already
+# committed under here stays tracked until `git rm --cached`.
+.opencode/
