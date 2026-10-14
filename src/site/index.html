@@ -26,6 +26,45 @@
 <meta name="ghindex-edge" content="https://ghindex-search.ghindex.workers.dev" />
 <style>
   /* ---------------------------------------------------------------------
+     The wordmark.
+
+     "ghindex" is a brand, and a brand that renders as a different shape on
+     every operating system is not one. The page body stays on the system UI
+     stack — it costs nothing and is right for interface text — but the wordmark
+     is set in Space Grotesk, whose single-storey `g` gives it something to be
+     recognised by, and which is condensed enough that seven characters do not
+     sprawl across the measure.
+
+     The file is 1,088 bytes because it is subset to the seven glyphs the
+     wordmark actually uses. Re-cut it if the text ever changes, or a glyph
+     will be missing and fall back silently:
+
+       pyftsubset space-grotesk-700.woff2 \
+         --unicodes=U+0064,U+0065,U+0067,U+0068,U+0069,U+006E,U+0078 \
+         --flavor=woff2 --no-hinting --desubroutinize -o space-grotesk-700.woff2
+
+     The fallback face carries the real font's vertical metrics, so the line the
+     wordmark sits on does not jump when the woff2 arrives. Space Grotesk is
+     unusually tall (98% ascent, 29% descent) and a generic sans-serif is not,
+     which is exactly the case the overrides exist for.
+     --------------------------------------------------------------------- */
+  @font-face {
+    font-family: "Space Grotesk";
+    src: url("./space-grotesk-700.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Space Grotesk Fallback";
+    src: local("Arial");
+    ascent-override: 98.4%;
+    descent-override: 29.2%;
+    line-gap-override: 0%;
+    size-adjust: 100%;
+  }
+
+  /* ---------------------------------------------------------------------
      Design tokens. One scale for colour, radius and motion so the two themes
      stay in step. Light is the default; dark is opt-in via the user's system
      preference.
@@ -76,7 +115,6 @@
     --blocked:     #8a6100;
     --gone:        #cf3b33;
     --star:        #8f6800;
-    --sky:         0.34;
 
     --r-sm: 6px;
     --r-md: 10px;
@@ -114,7 +152,6 @@
       --blocked:     #d29922;
       --gone:        #f0645b;
       --star:        #d9b64a;
-      --sky:         0.50;
       --shadow-sm: 0 1px 2px rgb(0 0 0 / .28);
       --shadow-md: 0 4px 14px -2px rgb(0 0 0 / .36);
     }
@@ -144,7 +181,6 @@
       --blocked:     #d29922;
       --gone:        #f0645b;
       --star:        #d9b64a;
-      --sky:         0.50;
       --shadow-sm: 0 1px 2px rgb(0 0 0 / .28);
       --shadow-md: 0 4px 14px -2px rgb(0 0 0 / .36);
     }
@@ -190,9 +226,9 @@
   main {
     max-width: 1200px;
     margin: 0 auto;
-    /* Above the fixed constellation layer, which is fixed to the viewport and
-       so would otherwise sit on top of the text on both the landing page and
-       the results page. */
+    /* Above the fixed star field, which is pinned to the viewport and so would
+       otherwise sit on top of the text on both the landing page and the
+       results page. */
     position: relative;
     z-index: 1;
     /* No bottom padding: with the help line as the last element, padding here
@@ -276,65 +312,6 @@
     gap: 1.4rem;
   }
 
-/* A slow drift behind the title, drawn once and moved on the compositor.
-
-   Constellation *lines* rather than scattered star dust. Dust needs a black
-   sky to exist at all: on this warm paper canvas white points vanish and dark
-   points read as dirt. Lines carry on both backgrounds, and they mean
-   something — a search index really is a graph, repos joined by topics and
-   Pages sites linked from repos, so the mesh is a map of the thing rather than
-   a picture of space.
-
-   One keyframe moving one element, so the compositor does the work and the
-   main thread never sees a frame. Opacity stays in the low single digits
-   because this sits directly behind a search box someone has to read. */
-  .constellation {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    width: 100%;
-    height: 100%;
-    color: var(--fg);
-    opacity: var(--sky);
-    pointer-events: none;
-    /* Fades the outer nodes so the mesh never shows an edge, and dims the band
-       the hero's own copy sits in. That second part is not optional: the mesh
-       drifts, so every star eventually crosses the title and the help line, and
-       moving individual stars aside only postpones the collision. The ellipse
-       intersects the first mask, so stars there read at a third of their
-       strength — present, never in the way of a word. */
-    -webkit-mask-image:
-      radial-gradient(ellipse at 50% 45%, #000 38%, transparent 78%),
-      radial-gradient(ellipse 32% 19% at 50% 55%, rgb(0 0 0 / .3) 0%, #000 100%);
-    mask-image:
-      radial-gradient(ellipse at 50% 45%, #000 38%, transparent 78%),
-      radial-gradient(ellipse 32% 19% at 50% 55%, rgb(0 0 0 / .3) 0%, #000 100%);
-    -webkit-mask-composite: source-in;
-    mask-composite: intersect;
-    animation: drift 28s ease-in-out infinite;
-    /* A slow rotation as well as a slow pan. A mesh that only slid a fraction
-       of a percent read as a still image; rotation is what makes it plainly
-       alive, because 3 degrees of turn sweeps the far edge of a full-width
-       mesh a good 50px while the centre barely moves. */
-    transform-origin: 50% 50%;
-    will-change: transform;
-  }
-  /* The lines are the faintest thing on the page, well under the stars. In a
-     real sky you read the points and only notice the figure afterwards. */
-  .constellation-links line {
-    stroke: currentColor;
-    stroke-width: 0.5;
-    opacity: .1;
-  }
-  .constellation-nodes circle { fill: currentColor; }
-  @keyframes drift {
-    0%   { transform: rotate(0deg) scale(1) translate3d(0, 0, 0); }
-    25%  { transform: rotate(1.6deg) scale(1.06) translate3d(-4.2%, 2.4%, 0); }
-    50%  { transform: rotate(3.2deg) scale(1.11) translate3d(0.8%, -3.4%, 0); }
-    75%  { transform: rotate(1.6deg) scale(1.06) translate3d(4.2%, 2.2%, 0); }
-    100% { transform: rotate(0deg) scale(1) translate3d(0, 0, 0); }
-  }
-
   /* ------------------------------------------------------------ theme toggle
 
      Ghost by default so it does not add a box to a page whose whole argument
@@ -402,8 +379,13 @@
 
   h1 {
     margin: 0;
+    font-family: "Space Grotesk", "Space Grotesk Fallback", ui-sans-serif, system-ui,
+                 -apple-system, "Segoe UI", sans-serif;
     font-size: clamp(2rem, 7vw, 2.9rem);
-    font-weight: 680;
+    /* 700, not the 680 this used to ask for. 680 is a variable-font weight and
+       no system UI font has one, so the browser was rounding it — the request
+       was not doing what it said. */
+    font-weight: 700;
     letter-spacing: -.03em;
     line-height: 1.1;
   }
