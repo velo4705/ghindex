@@ -431,6 +431,21 @@ async function runChecks(browser: string) {
     sky?.pointer === "none", `pointer-events=${sky?.pointer}`);
   check("it drifts rather than sitting still", sky?.animation === "drift", `animation=${sky?.animation}`);
   check("it stays faint", Number(sky?.opacity) <= 0.12, `opacity=${sky?.opacity}`);
+  // A 64s cycle drifting 1.6% measured 8px over nine seconds, which is not
+  // motion a reader can see. This asserts the cycle is short enough and the
+  // travel wide enough to register.
+  const motion = await evalJs(`(() => {
+    const s = document.querySelector('.constellation');
+    const c = getComputedStyle(s);
+    const secs = parseFloat(c.animationDuration);
+    const m = new DOMMatrixReadOnly(c.transform);
+    return { secs, travelX: Math.abs(m.m41), travelY: Math.abs(m.m42) };
+  })()`);
+  check("the drift cycle is short enough to actually read as movement",
+    motion?.secs <= 40, `${motion?.secs}s`);
+  check("and it covers real ground in that time",
+    Math.max(Math.abs(motion?.travelX ?? 0), Math.abs(motion?.travelY ?? 0)) > 20,
+    `x=${Math.round(motion?.travelX ?? 0)} y=${Math.round(motion?.travelY ?? 0)}`);
   check("and the wordmark is still the topmost thing over it",
     sky?.titleOnTop === true, "the mesh is painting over the title");
 
@@ -493,6 +508,34 @@ async function runChecks(browser: string) {
              w: Math.round(a.width) };
   })()`);
   check("the toggle never sits on top of the search box", bar?.overlap === false);
+
+  // Both of these were wrong at once and looked like one problem: the mesh was
+  // boxed into the hero instead of the viewport, and the toggle bar inherited a
+  // 1200px max-width that parked it in the middle of a wide screen.
+  const span = await evalJs(`(() => {
+    const sky = document.querySelector('.constellation');
+    const bar = document.querySelector('.themebar');
+    const row = document.querySelector('#results .row');
+    return {
+      skyW: Math.round(sky ? sky.getBoundingClientRect().width : 0),
+      skyPos: sky ? getComputedStyle(sky).position : '',
+      skyZ: sky ? getComputedStyle(sky).zIndex : '',
+      mainZ: getComputedStyle(document.querySelector('main')).zIndex,
+      barW: Math.round(bar ? bar.getBoundingClientRect().width : 0),
+      btnRight: Math.round(document.getElementById('themetoggle').getBoundingClientRect().right),
+      vw: window.innerWidth,
+      hasRows: !!row,
+    };
+  })()`);
+  check("the mesh fills the viewport, not just the hero",
+    span?.skyPos === "fixed" && span?.skyW >= (span?.vw ?? 0) - 1,
+    `position=${span?.skyPos} width=${span?.skyW} viewport=${span?.vw}`);
+  check("and content sits above the mesh, not under it",
+    Number(span?.mainZ) > Number(span?.skyZ), `main=${span?.mainZ} mesh=${span?.skyZ}`);
+  check("the theme bar spans the full width too",
+    span?.barW === span?.vw, `bar=${span?.barW} viewport=${span?.vw}`);
+  check("and the toggle is parked in the actual corner",
+    (span?.btnRight ?? 0) >= (span?.vw ?? 0) - 24, `right=${span?.btnRight} viewport=${span?.vw}`);
 
   // ------------------------------------------------------------- tag picker
 

@@ -190,6 +190,11 @@
   main {
     max-width: 1200px;
     margin: 0 auto;
+    /* Above the fixed constellation layer, which is fixed to the viewport and
+       so would otherwise sit on top of the text on both the landing page and
+       the results page. */
+    position: relative;
+    z-index: 1;
     /* No bottom padding: with the help line as the last element, padding here
        would push it off the bottom and make the page scroll before the visitor
        has done anything. The hero's own gap provides all the breathing room.
@@ -231,12 +236,6 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    /* Anchors the constellation and clips its overhang. `z-index` opens a
-       stacking context so the mesh can sit at z-index -1 — behind the text but
-       still above the page background, which a bare -1 would fall behind. */
-    position: relative;
-    z-index: 0;
-    overflow: hidden;
     /* One gap between the help line and the topic row. Before this the two were
        separated by the whole height of the hero. */
     gap: 1.9rem;
@@ -290,19 +289,24 @@
    main thread never sees a frame. Opacity stays in the low single digits
    because this sits directly behind a search box someone has to read. */
   .constellation {
-    position: absolute;
-    inset: -6%;
-    z-index: -1;
-    width: 112%;
-    height: 112%;
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
     color: var(--fg);
     opacity: var(--sky);
     pointer-events: none;
-    overflow: visible;
-    /* Fades the outermost nodes and lines so the mesh never shows an edge. */
+    /* Fades the outer nodes and lines so the mesh never shows an edge. */
     -webkit-mask-image: radial-gradient(ellipse at 50% 45%, #000 38%, transparent 78%);
     mask-image: radial-gradient(ellipse at 50% 45%, #000 38%, transparent 78%);
-    animation: drift 64s ease-in-out infinite;
+    animation: drift 28s ease-in-out infinite;
+    /* A slow rotation as well as a slow pan. A mesh that only slid a fraction
+       of a percent read as a still image; rotation is what makes it plainly
+       alive, because 3 degrees of turn sweeps the far edge of a full-width
+       mesh a good 50px while the centre barely moves. */
+    transform-origin: 50% 50%;
+    will-change: transform;
   }
   .constellation-links line {
     stroke: currentColor;
@@ -310,8 +314,11 @@
   }
   .constellation-nodes circle { fill: currentColor; }
   @keyframes drift {
-    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-    50%      { transform: translate3d(-1.6%, 1.1%, 0) scale(1.045); }
+    0%   { transform: rotate(0deg) scale(1) translate3d(0, 0, 0); }
+    25%  { transform: rotate(1.6deg) scale(1.06) translate3d(-4.2%, 2.4%, 0); }
+    50%  { transform: rotate(3.2deg) scale(1.11) translate3d(0.8%, -3.4%, 0); }
+    75%  { transform: rotate(1.6deg) scale(1.06) translate3d(4.2%, 2.2%, 0); }
+    100% { transform: rotate(0deg) scale(1) translate3d(0, 0, 0); }
   }
 
   /* ------------------------------------------------------------ theme toggle
@@ -325,8 +332,6 @@
     top: 0;
     left: 0;
     right: 0;
-    max-width: 1200px;
-    margin: 0 auto;
     display: flex;
     justify-content: flex-end;
     padding: .9rem 1.25rem;
@@ -877,6 +882,8 @@
 </style>
 </head>
 <body>
+<svg class="constellation" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="constellation-links"><line x1="320" y1="80" x2="520" y2="150"/><line x1="520" y1="150" x2="760" y2="90"/><line x1="760" y1="90" x2="980" y2="140"/><line x1="980" y1="140" x2="1130" y2="260"/><line x1="1130" y1="260" x2="200" y2="340"/><line x1="320" y1="80" x2="420" y2="300"/><line x1="520" y1="150" x2="660" y2="260"/><line x1="760" y1="90" x2="660" y2="260"/><line x1="760" y1="90" x2="880" y2="360"/><line x1="980" y1="140" x2="880" y2="360"/><line x1="1130" y1="260" x2="1080" y2="450"/><line x1="200" y1="340" x2="1080" y2="450"/><line x1="200" y1="340" x2="300" y2="520"/><line x1="420" y1="300" x2="660" y2="260"/><line x1="660" y1="260" x2="880" y2="360"/><line x1="880" y1="360" x2="1080" y2="450"/><line x1="1080" y1="450" x2="300" y2="520"/><line x1="420" y1="300" x2="600" y2="470"/><line x1="660" y1="260" x2="820" y2="560"/><line x1="880" y1="360" x2="820" y2="560"/><line x1="1080" y1="450" x2="1060" y2="600"/><line x1="300" y1="520" x2="480" y2="660"/><line x1="600" y1="470" x2="180" y2="660"/><line x1="820" y1="560" x2="180" y2="660"/><line x1="600" y1="470" x2="940" y2="700"/><line x1="1060" y1="600" x2="480" y2="660"/><line x1="820" y1="560" x2="1060" y2="600"/><line x1="180" y1="660" x2="940" y2="700"/></g><g class="constellation-nodes"><circle cx="140" cy="120" r="1.6"/><circle cx="320" cy="80" r="2.2"/><circle cx="520" cy="150" r="1.4"/><circle cx="760" cy="90" r="1.8"/><circle cx="980" cy="140" r="1.5"/><circle cx="1130" cy="260" r="2.0"/><circle cx="200" cy="340" r="1.9"/><circle cx="420" cy="300" r="1.3"/><circle cx="660" cy="260" r="2.3"/><circle cx="880" cy="360" r="1.6"/><circle cx="1080" cy="450" r="1.4"/><circle cx="300" cy="520" r="1.7"/><circle cx="600" cy="470" r="1.5"/><circle cx="820" cy="560" r="2.1"/><circle cx="1060" cy="600" r="1.3"/><circle cx="480" cy="660" r="1.6"/><circle cx="180" cy="660" r="1.4"/><circle cx="940" cy="700" r="1.8"/></g></svg>
+
 <main>
   <noscript>
     <p class="note warn">
@@ -890,9 +897,9 @@
   <!-- Theme override. Fixed rather than in-flow, because the strain these
        themes exist to soften shows up while reading results, ten rows down,
        and an in-flow control scrolls out of reach exactly when it is wanted.
-       `left:0; right:0; max-width` pins it to the same 1200px grid `main`
-       uses, so it sits on the content measure rather than floating at the
-       raw viewport edge on a wide monitor. -->
+       The bar spans the whole viewport — constraining it to the 1200px
+       `main` measure boxed the button into the middle of a wide screen
+       instead of parking it in the corner. -->
   <div class="themebar">
     <button id="themetoggle" class="themetoggle" type="button" aria-label="Theme: system. Switch to light.">
       <svg class="ticon ticon-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -925,7 +932,6 @@
     row does not.
   -->
   <div class="hero">
-<svg class="constellation" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><g class="constellation-links"><line x1="320" y1="80" x2="520" y2="150"/><line x1="520" y1="150" x2="760" y2="90"/><line x1="760" y1="90" x2="980" y2="140"/><line x1="980" y1="140" x2="1130" y2="260"/><line x1="1130" y1="260" x2="200" y2="340"/><line x1="320" y1="80" x2="420" y2="300"/><line x1="520" y1="150" x2="660" y2="260"/><line x1="760" y1="90" x2="660" y2="260"/><line x1="760" y1="90" x2="880" y2="360"/><line x1="980" y1="140" x2="880" y2="360"/><line x1="1130" y1="260" x2="1080" y2="450"/><line x1="200" y1="340" x2="1080" y2="450"/><line x1="200" y1="340" x2="300" y2="520"/><line x1="420" y1="300" x2="660" y2="260"/><line x1="660" y1="260" x2="880" y2="360"/><line x1="880" y1="360" x2="1080" y2="450"/><line x1="1080" y1="450" x2="300" y2="520"/><line x1="420" y1="300" x2="600" y2="470"/><line x1="660" y1="260" x2="820" y2="560"/><line x1="880" y1="360" x2="820" y2="560"/><line x1="1080" y1="450" x2="1060" y2="600"/><line x1="300" y1="520" x2="480" y2="660"/><line x1="600" y1="470" x2="180" y2="660"/><line x1="820" y1="560" x2="180" y2="660"/><line x1="600" y1="470" x2="940" y2="700"/><line x1="1060" y1="600" x2="480" y2="660"/><line x1="820" y1="560" x2="1060" y2="600"/><line x1="180" y1="660" x2="940" y2="700"/></g><g class="constellation-nodes"><circle cx="140" cy="120" r="1.6"/><circle cx="320" cy="80" r="2.2"/><circle cx="520" cy="150" r="1.4"/><circle cx="760" cy="90" r="1.8"/><circle cx="980" cy="140" r="1.5"/><circle cx="1130" cy="260" r="2.0"/><circle cx="200" cy="340" r="1.9"/><circle cx="420" cy="300" r="1.3"/><circle cx="660" cy="260" r="2.3"/><circle cx="880" cy="360" r="1.6"/><circle cx="1080" cy="450" r="1.4"/><circle cx="300" cy="520" r="1.7"/><circle cx="600" cy="470" r="1.5"/><circle cx="820" cy="560" r="2.1"/><circle cx="1060" cy="600" r="1.3"/><circle cx="480" cy="660" r="1.6"/><circle cx="180" cy="660" r="1.4"/><circle cx="940" cy="700" r="1.8"/></g></svg>
     <div class="hero-inner">
       <h1>ghindex</h1>
       <p class="tagline">Live search of GitHub Pages sites.</p>
