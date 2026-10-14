@@ -210,6 +210,19 @@ async function runChecks(browser: string) {
       returnByValue: true,
       awaitPromise: true,
     });
+    // Surface failures instead of returning undefined. `Runtime.evaluate` runs
+    // the text as a script, so a stray top-level `return` is a SyntaxError — and
+    // a probe that silently yields undefined reads exactly like a page that
+    // quietly did nothing, which is how a whole set of theme checks came to be
+    // clicking nothing at all and still passing.
+    const d = r.result?.exceptionDetails;
+    if (d) {
+      const detail = String(d.exception?.description || d.text || "script error")
+        .split("\n")
+        .slice(0, 3)
+        .join(" ");
+      throw new Error(`evalJs failed: ${detail}\n  expression: ${expr.slice(0, 160)}`);
+    }
     return r.result?.result?.value;
   };
 
@@ -530,7 +543,7 @@ async function runChecks(browser: string) {
   check("the choice is remembered across a reload",
     systemLight2?.stored === "light", `stored=${systemLight2?.stored}`);
   check("and the button says where the next click lands",
-    /Theme: light\. Switch to dark\./.test(systemLight2?.label ?? ""),
+    /^Light\. Switch to dark\.$/.test(systemLight2?.label ?? ""),
     JSON.stringify(systemLight2?.label));
 
   // "auto" must remain reachable, or anyone who wants to follow their system
@@ -611,27 +624,55 @@ async function runChecks(browser: string) {
   check("every click turns the page the other colour",
     deadSteps === 0, `${deadSteps} of 4 clicks changed nothing: ${seen.join(" -> ")}`);
 
-  // A theme change must not restart the star field. Rebuilding it discards
-  // every particle's position and velocity, so the sky visibly jumps each time
-  // a control the reader may press several times is used. The library reads
-  // colour per frame, so the right answer is to repaint the running particles.
-  const motionBefore = JSON.parse(String(await evalJs(`JSON.stringify((() => {
-    const p = window.pJSDom[0].pJS.particles.array[0];
-    return { x: p.x, y: p.y, vx: p.vx, vy: p.vy };
-  })())`)));
+  // There are only two modes. A third "auto" position is not offered, because
+  // it is indistinguishable from whichever of the two the system is already
+  // showing, and a control step that cannot change anything is a dead click.
+  const modes = await evalJs(`JSON.stringify({
+    icons: document.querySelectorAll('#themetoggle .ticon').length,
+    monitor: !!document.querySelector('#themetoggle .ticon-auto'),
+    shown: [...document.querySelectorAll('#themetoggle .ticon')]
+      .filter(s => getComputedStyle(s).display !== 'none')
+      .map(s => s.getAttribute('class').split(' ').pop()),
+  })`);
+  const m = JSON.parse(String(modes));
+  check("the control offers exactly two modes, dark and light",
+    m?.icons === 2 && m?.monitor === false && m?.shown?.length === 1,
+    `${m?.icons} icons, monitor=${m?.monitor}, showing ${m?.shown?.join(",")}`);
+
+  // A theme change must not restart the star field. Rebuilding it discards every
+  // particle and runs a fresh rAF loop, so the sky visibly jumps each time a
+  // control the reader may press several times is used.
+  //
+  // The check marks the canvas element and looks for the mark afterwards, rather
+  // than tracking a particle. The library recycles particles as they leave the
+  // frame, so `array[0]` before and after a click is not guaranteed to be the
+  // same star — following one produced a 957px "teleport" that was really two
+  // different particles being compared. The canvas is the stable object: a
+  // rebuild removes it and makes a new one, so the mark is exact.
+  const marked = await evalJs(`(() => {
+    const c = document.querySelector('#sky canvas');
+    if (!c) return false;
+    c.dataset.marker = 'original';
+    return true;
+  })()`);
   await Bun.sleep(600);
-  await evalJs(`document.getElementById('themetoggle')?.click(); return 1`);
-  await Bun.sleep(120);
-  const motionAfter = JSON.parse(String(await evalJs(`JSON.stringify((() => {
-    const p = window.pJSDom[0].pJS.particles.array[0];
-    return { x: p.x, y: p.y, vx: p.vx, vy: p.vy };
-  })())`)));
-  const jump = Math.hypot(motionAfter.x - motionBefore.x, motionAfter.y - motionBefore.y);
-  check("a theme change does not teleport a star",
-    jump < 80, `moved ${jump.toFixed(0)}px across the click`);
-  check("it keeps the same drift instead of re-rolling it",
-    motionAfter.vx === motionBefore.vx && motionAfter.vy === motionBefore.vy,
-    `v ${motionBefore.vx.toFixed(3)},${motionBefore.vy.toFixed(3)} -> ${motionAfter.vx.toFixed(3)},${motionAfter.vy.toFixed(3)}`);
+  await evalJs(`(() => { document.getElementById('themetoggle')?.click(); return 1; })()`);
+  await Bun.sleep(150);
+  const afterClick = JSON.parse(String(await evalJs(`JSON.stringify({
+    sameCanvas: document.querySelector('#sky canvas')?.dataset?.marker === 'original',
+    canvases: document.querySelectorAll('#sky canvas').length,
+    stars: (window.pJSDom || [])[0]?.pJS?.particles?.array?.length ?? 0,
+    ink: (window.pJSDom || [])[0]?.pJS?.particles?.array?.[0]?.color?.value ?? null,
+    css: getComputedStyle(document.documentElement).getPropertyValue('--fg').trim(),
+  })`)));
+  check("there was a canvas to mark", marked === true);
+  check("a theme change does not rebuild the field",
+    afterClick?.sameCanvas === true, "the canvas was replaced, so the field was rebuilt");
+  check("no second field is left running alongside it",
+    afterClick?.canvases === 1, `${afterClick?.canvases} canvases`);
+  check("and the stars are still there, in the new colour",
+    (afterClick?.stars ?? 0) > 0 && afterClick?.ink?.toLowerCase() === afterClick?.css?.toLowerCase(),
+    `${afterClick?.stars} stars, ink=${afterClick?.ink} css=${afterClick?.css}`);
 
   // Both of these were wrong at once and looked like one problem: the mesh was
   // boxed into the hero instead of the viewport, and the toggle bar inherited a

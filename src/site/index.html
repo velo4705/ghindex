@@ -375,14 +375,19 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
-  /* Monitor while the page is following the system, sun or moon once it is
-     pinned to one. No media query needed: the attribute alone decides. */
+  /* Sun or moon, and only ever those two. The icon shows the colour currently on
+     screen, so a visitor whose system is dark arrives on the moon without having
+     asked for it — which is why the unpinned case falls back to a media query
+     rather than to a third icon meaning "following the system". */
   .ticon { grid-area: 1 / 1; width: 1.05rem; height: 1.05rem; display: none; }
-  .ticon-auto { display: block; }
-  :root[data-theme="light"] .ticon-auto { display: none; }
   :root[data-theme="light"] .ticon-light { display: block; }
-  :root[data-theme="dark"] .ticon-auto { display: none; }
   :root[data-theme="dark"] .ticon-dark { display: block; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme]) .ticon-light { display: block; }
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .ticon-dark { display: block; }
+  }
 
   /* The star field. particles.js puts a canvas in here and does the drawing;
      everything here is about sitting behind the page and staying out of the
@@ -924,11 +929,7 @@
        `main` measure boxed the button into the middle of a wide screen
        instead of parking it in the corner. -->
   <div class="themebar">
-    <button id="themetoggle" class="themetoggle" type="button" aria-label="Theme: system. Switch to light.">
-      <svg class="ticon ticon-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-      </svg>
+    <button id="themetoggle" class="themetoggle" type="button" aria-label="Switch theme">
       <svg class="ticon ticon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
         <circle cx="12" cy="12" r="4"/>

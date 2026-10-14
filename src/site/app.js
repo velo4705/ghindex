@@ -764,19 +764,19 @@ $("sortbar").addEventListener("click", (e) => {
 /**
  * Manual theme override.
  *
- * The page follows the system until someone says otherwise. The control is a
- * two-state switch rather than a three-state cycle, and the reason is arithmetic
- * rather than taste: "auto" always looks identical to whichever of light or dark
- * the system is already showing, so a cycle through all three can only ever have
- * one step that changes nothing. Whichever way round you order it, the reader
- * gets a click that does not appear to do anything. Two states, and every click
- * turns the page the other colour.
+ * The page follows the system until someone says otherwise, and then it is
+ * simply light or dark — there is no third control position. An earlier version
+ * cycled auto/light/dark, but "auto" always looks identical to whichever of the
+ * two the system is already showing, so one step of that cycle could never
+ * change anything: two clicks to reach light, one to get back. A two-mode switch
+ * has no such step, because both of its steps are the opposite colour by
+ * definition.
  *
- * Handing control back to the system is still possible, and is folded into the
- * same click: when the pinned theme already matches what the system would show,
- * the next click drops the pin. That step looks like a no-op in colour, but the
- * control changes to the monitor icon and says so in its label, so it is a
- * visible, named state rather than a dead click.
+ * The icon shows the colour on screen, not the one a click would give, so on a
+ * dark system the page arrives on the moon without anyone having chosen it.
+ *
+ * Choosing pins the preference; clearing the stored value is what hands the page
+ * back to the system, and that is not a thing the control offers.
  *
  * The stylesheet does the colour work: `[data-theme]` on <html> wins, and its
  * *absence* is what lets the system media query in. Both branches are restated
@@ -819,12 +819,7 @@ function applyTheme(theme) {
 
   const btn = $("themetoggle");
   if (btn) {
-    btn.setAttribute(
-      "aria-label",
-      theme
-        ? `Theme: ${theme}. Switch to ${dark ? "light" : "dark"}.`
-        : `Following your system: ${dark ? "dark" : "light"}. Switch to ${dark ? "light" : "dark"}, or keep following.`,
-    );
+    btn.setAttribute("aria-label", dark ? "Dark. Switch to light." : "Light. Switch to dark.");
   }
   // The stars are painted in the theme's own text colour. This repaints them in
   // place; rebuilding the field here would restart the drift on every click.
@@ -832,13 +827,11 @@ function applyTheme(theme) {
 }
 
 $("themetoggle")?.addEventListener("click", () => {
-  const pinned = document.documentElement.getAttribute("data-theme");
-  // Already showing what the reader is asking for, so hand the page back to the
-  // system instead of toggling to a colour that is already on screen.
-  const next = pinned && shownDark() === (pinned === "dark") ? null : shownDark() ? "light" : "dark";
+  // Always the opposite of what is on screen, so every click is a visible
+  // change. There is no third position to land on.
+  const next = shownDark() ? "light" : "dark";
   try {
-    if (next) localStorage.setItem(THEME_KEY, next);
-    else localStorage.removeItem(THEME_KEY);
+    localStorage.setItem(THEME_KEY, next);
   } catch {
     // Unpersistable, but the override still applies for this page view.
   }
