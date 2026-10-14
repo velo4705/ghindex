@@ -681,7 +681,7 @@ function renderResults(statusText, keepPager = false) {
   const el = $("results");
   if (statusText) {
     el.innerHTML =
-      `<div class="empty">${esc(statusText)}</div>` +
+      `<div class="empty loading"><span class="spinner" aria-hidden="true"></span>${esc(statusText)}</div>` +
       (keepPager ? `<div id="pager"></div>` : "");
     if (keepPager) renderPager();
     return;
@@ -757,6 +757,75 @@ $("sortbar").addEventListener("click", (e) => {
   runSearch({ fresh: true, sortChanged: true });
 });
 
+// ---------------------------------------------------------------- theme
+
+/**
+ * Manual theme override.
+ *
+ * The page follows the system by default and keeps doing so until someone says
+ * otherwise. A plain two-state switch would strand anyone who wanted "auto"
+ * back — there would be nowhere to go but to clear site data — so this cycles
+ * auto -> light -> dark -> auto instead.
+ *
+ * The stylesheet does the actual work: `[data-theme]` on <html> wins, and its
+ * *absence* is what lets the system media query in. Both branches are restated
+ * there because CSS cannot express "this, and also when that attribute is set".
+ */
+const THEME_KEY = "ghindex-theme";
+const THEMES = ["auto", "light", "dark"];
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+const themeIs = (v) => (v === "light" || v === "dark" ? v : "auto");
+const currentTheme = () => themeIs(document.documentElement.getAttribute("data-theme"));
+
+function readStoredTheme() {
+  try {
+    return themeIs(localStorage.getItem(THEME_KEY));
+  } catch {
+    // Storage can be blocked outright in private modes. Following the system is
+    // a perfectly good answer, so a refusal is not worth surfacing.
+    return "auto";
+  }
+}
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === "auto") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", theme);
+
+  // The two theme-color metas are media-gated, which is exactly right before
+  // this runs and wrong the moment a person overrides the system, so one is
+  // enabled and the other muted.
+  const dark = theme === "dark" || (theme === "auto" && darkQuery.matches);
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
+    m.setAttribute("media", m.dataset.scheme === (dark ? "dark" : "light") ? "all" : "not all");
+  });
+
+  const btn = $("themetoggle");
+  if (btn) {
+    const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+    btn.setAttribute("aria-label", `Theme: ${theme}. Switch to ${next}.`);
+  }
+}
+
+$("themetoggle")?.addEventListener("click", () => {
+  const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+  try {
+    if (next === "auto") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, next);
+  } catch {
+    // Unpersistable, but the override still applies for this page view.
+  }
+  applyTheme(next);
+});
+
+// Following the system has to mean following it live, or someone who sets their
+// OS to dark at sunset watches this page stay light.
+darkQuery.addEventListener("change", () => {
+  if (currentTheme() === "auto") applyTheme("auto");
+});
+
 // ---------------------------------------------------------------- boot
 
+applyTheme(readStoredTheme());
 renderTagPicker();

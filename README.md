@@ -2,7 +2,7 @@
 
 # ghindex
 
-**GitHub IO Indexer -- A Normal Search Engine for GitHub IO Pages**
+**GitHub IO Indexer - A Normal Search Engine for GitHub IO Pages**
 
 **[Link to Search Engine](https://velo4705.github.io/ghindex)**
 

@@ -401,6 +401,99 @@ async function runChecks(browser: string) {
   check("no preview toggle", chrome?.view === false);
   check("no token field", chrome?.token === false);
 
+  // ---------------------------------------------------------- constellation
+
+  // The drifting mesh behind the title. The failure that matters is not that it
+  // is missing but that it is *on top*: it is absolutely positioned, and an
+  // absolutely positioned box paints above in-flow siblings. Only a hit test at
+  // the wordmark proves the text is still the thing a reader sees.
+  const sky = await evalJs(`(() => {
+    const s = document.querySelector('.constellation');
+    if (!s) return { present: false };
+    const c = getComputedStyle(s);
+    const h1 = document.querySelector('h1');
+    const b = h1.getBoundingClientRect();
+    const top = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+    return {
+      present: true,
+      aria: s.getAttribute('aria-hidden'),
+      pointer: c.pointerEvents,
+      zIndex: c.zIndex,
+      animation: c.animationName,
+      opacity: c.opacity,
+      titleOnTop: !!top && top.tagName === 'H1',
+    };
+  })()`);
+  check("a constellation sits behind the title", sky?.present === true);
+  check("it is decorative only, so it is hidden from assistive tech",
+    sky?.aria === "true", `aria-hidden=${sky?.aria}`);
+  check("and cannot swallow a click meant for the search box",
+    sky?.pointer === "none", `pointer-events=${sky?.pointer}`);
+  check("it drifts rather than sitting still", sky?.animation === "drift", `animation=${sky?.animation}`);
+  check("it stays faint", Number(sky?.opacity) <= 0.12, `opacity=${sky?.opacity}`);
+  check("and the wordmark is still the topmost thing over it",
+    sky?.titleOnTop === true, "the mesh is painting over the title");
+
+  // ----------------------------------------------------------- theme toggle
+
+  // The failure this guards is a scoping one, not a cosmetic one. Restating
+  // the dark tokens for `[data-theme=dark]` inside the system media query makes
+  // that rule true only when the system is *already* dark — so the one case the
+  // override exists for, asking for dark on a light machine, silently does
+  // nothing. So the override is asserted against a forced-light system.
+  const themeState = async () => JSON.parse(String(await evalJs(`JSON.stringify({
+    attr: document.documentElement.getAttribute('data-theme'),
+    bg: getComputedStyle(document.body).backgroundColor,
+    label: (document.getElementById('themetoggle')||{}).getAttribute?.('aria-label') || '',
+    stored: (() => { try { return localStorage.getItem('ghindex-theme'); } catch { return 'blocked'; } })(),
+  })`)));
+
+  const tryTheme = async (want: string) => {
+    await evalJs(`(() => { try { localStorage.setItem('ghindex-theme', ${JSON.stringify(want)}); } catch {}
+      return 1; })()`);
+    // A real navigation, not location.reload(): a reload destroys the execution
+    // context mid-evaluate, and evalJs cannot see that it failed.
+    await send("Page.navigate", { url: BASE + "/index.html" });
+    await Bun.sleep(1500);
+    return themeState();
+  };
+
+  const systemLight = await tryTheme("dark");
+  check("an explicit dark override applies even though the system is light",
+    systemLight?.attr === "dark" && systemLight?.bg === "rgb(28, 31, 36)",
+    `attr=${systemLight?.attr} bg=${systemLight?.bg}`);
+
+  const systemLight2 = await tryTheme("light");
+  check("and an explicit light override applies when the system is dark",
+    systemLight2?.attr === "light" && systemLight2?.bg === "rgb(244, 242, 238)",
+    `attr=${systemLight2?.attr} bg=${systemLight2?.bg}`);
+
+  check("the choice is remembered across a reload",
+    systemLight2?.stored === "light", `stored=${systemLight2?.stored}`);
+  check("and the button says where the next click lands",
+    /Theme: light\. Switch to dark\./.test(systemLight2?.label ?? ""),
+    JSON.stringify(systemLight2?.label));
+
+  // "auto" must remain reachable, or anyone who wants to follow their system
+  // again has no way back but to clear site data.
+  await evalJs(`(() => { try { localStorage.removeItem('ghindex-theme'); } catch {} return 1; })()`);
+  await send("Page.navigate", { url: BASE + "/index.html" });
+  await Bun.sleep(1500);
+  const back = await themeState();
+  check("clearing the choice returns the page to following the system",
+    (back?.attr ?? null) === null, `attr=${back?.attr}`);
+  check("and the stored override is gone, not merely ignored",
+    (back?.stored ?? null) === null, `stored=${back?.stored}`);
+
+  const bar = await evalJs(`(() => { const b = document.getElementById('themetoggle');
+    const f = document.getElementById('f');
+    if (!b || !f) return null;
+    const a = b.getBoundingClientRect(), c = f.getBoundingClientRect();
+    return { overlap: a.left < c.right && a.right > c.left && a.top < c.bottom && a.bottom > c.top,
+             w: Math.round(a.width) };
+  })()`);
+  check("the toggle never sits on top of the search box", bar?.overlap === false);
+
   // ------------------------------------------------------------- tag picker
 
   // --- the picker state -------------------------------------------------------
@@ -580,6 +673,21 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
       // to be able to correct it without waiting out the fetch.
       pagerPresent: !!document.querySelector('#results .pager'),
       disabled: el.querySelectorAll('.pagebtn[disabled]').length,
+      spinner: el.querySelectorAll('.spinner').length,
+      spinnerHidden: (el.querySelector('.spinner') || {}).getAttribute('aria-hidden'),
+      spinnerAnim: (() => {
+        const s = el.querySelector('.spinner');
+        return s ? getComputedStyle(s).animationName : '';
+      })(),
+      // Centred on the placeholder, not shoved against the text.
+      spinnerCentred: (() => {
+        const s = el.querySelector('.spinner');
+        const box = el.querySelector('.empty');
+        if (!s || !box) return false;
+        const a = s.getBoundingClientRect();
+        const b = box.getBoundingClientRect();
+        return Math.abs((a.x + a.width / 2) - (b.x + b.width / 2)) < 2;
+      })(),
     };
   })())`)));
 
@@ -592,6 +700,12 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
   check("the page already shown stays marked current", duringLoad.current === "1", `current=${duringLoad.current}`);
   check("the page control stays available", duringLoad.pagerPresent === true);
   check("and stays clickable", duringLoad.disabled === 0, `${duringLoad.disabled} disabled`);
+  check("a buffering ring accompanies the placeholder", duringLoad.spinner === 1,
+    `${duringLoad.spinner} spinners`);
+  check("the ring is animated", duringLoad.spinnerAnim === "spin", `animation=${duringLoad.spinnerAnim}`);
+  check("the ring is centred above the words", duringLoad.spinnerCentred === true);
+  check("and is hidden from assistive tech, since the words say it already",
+    duringLoad.spinnerHidden === "true", `aria-hidden=${duringLoad.spinnerHidden}`);
 
   // Only the last click should land: page 4, not page 3 or 5.
   const landed = await waitFor(
@@ -1055,6 +1169,27 @@ check("and the title comes before the badge in the row", badgeAlign.titleFirst =
   const safe = await evalJs(`(() => { const a = document.querySelector('#results .row h3 a');
     return a ? (a.rel.includes('noopener') && a.target === '_blank') : false; })()`);
   check("result links open safely", safe === true);
+
+  // ------------------------------------------------------- an empty result set
+
+  // The buffering ring belongs to the in-flight state only. A query that matches
+  // nothing is also a settled state, and a ring left spinning there would tell a
+  // reader the search is still running when it has already finished.
+  await evalJs(`(() => { const q=document.getElementById('q');
+    q.value='zzqxvnotarealprojectname12345';
+    q.dispatchEvent(new Event('input',{bubbles:true})); return 1; })()`);
+  await waitFor(evalJs,
+    `(document.getElementById('results').getAttribute('aria-busy')==='false'
+      && document.getElementById('results').textContent.includes('No Pages sites matched'))`);
+  const none = await evalJs(`(() => ({
+    rows: document.querySelectorAll('#results .row').length,
+    spinners: document.querySelectorAll('#results .spinner').length,
+    box: document.querySelectorAll('#results .empty').length,
+  }))()`);
+  check("a query that matches nothing settles with no rows", none?.rows === 0, `${none?.rows} rows`);
+  check("and says so in a placeholder", none?.box === 1, `${none?.box} placeholders`);
+  check("but shows no buffering ring, because nothing is in flight",
+    none?.spinners === 0, `${none?.spinners} spinners`);
 
   // ------------------------------------------------------------- clearing
 
