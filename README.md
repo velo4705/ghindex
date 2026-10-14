@@ -41,3 +41,17 @@ A browser can't hold a GitHub token, because anything in a static page is public
 Typing is debounced and results are cached at the edge, so searching the same thing twice costs nothing, but a burst of new terms from a lot of people at once can still hit the ceiling. When it does, the page says so instead of showing an empty result list.
 
 ---
+
+### Can I use this code?
+
+Yes — the source is MIT licensed, so you can copy it, change it and ship it.
+See [LICENSE](LICENSE).
+
+Two assets are vendored rather than written here and keep their own terms: the
+**Space Grotesk** wordmark (SIL Open Font License 1.1) and **particles.js**
+(MIT), which draws the background star field. Both notices are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+If you spot something broken or want to improve it, a pull request is welcome.
+There is no formal process — open an issue first if the change is large enough
+that we'd rather talk it through than review a surprise.

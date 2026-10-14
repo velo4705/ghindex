@@ -1,6 +1,7 @@
 {
   "name": "ghindex",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "serve": "bun run serve.ts",
