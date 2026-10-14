@@ -432,20 +432,25 @@ async function runChecks(browser: string) {
   check("it drifts rather than sitting still", sky?.animation === "drift", `animation=${sky?.animation}`);
   check("it stays faint", Number(sky?.opacity) <= 0.12, `opacity=${sky?.opacity}`);
   // A 64s cycle drifting 1.6% measured 8px over nine seconds, which is not
-  // motion a reader can see. This asserts the cycle is short enough and the
-  // travel wide enough to register.
+  // motion a reader can see. Both bounds are read out of the keyframes rather
+  // than sampled from a running transform: a transform sampled at one instant
+  // reads identity at the top of the cycle, so the value would depend on when
+  // the check happened to run and would pass or fail on nothing.
   const motion = await evalJs(`(() => {
-    const s = document.querySelector('.constellation');
-    const c = getComputedStyle(s);
-    const secs = parseFloat(c.animationDuration);
-    const m = new DOMMatrixReadOnly(c.transform);
-    return { secs, travelX: Math.abs(m.m41), travelY: Math.abs(m.m42) };
+    const css = [...document.querySelectorAll('style')].map(s => s.textContent).join('\\n');
+    const block = css.match(/@keyframes\\s+drift\\s*\\{([\\s\\S]*?)\\n\\s*\\}/);
+    if (!block) return { found: false };
+    const secs = parseFloat(getComputedStyle(document.querySelector('.constellation')).animationDuration);
+    const x = [...block[1].matchAll(/translate3d\\(\\s*(-?[\\d.]+)%/g)].map(m => Math.abs(+m[1]));
+    const y = [...block[1].matchAll(/translate3d\\([^,]+,\\s*(-?[\\d.]+)%/g)].map(m => Math.abs(+m[1]));
+    return { found: true, secs, xPct: x.length ? Math.max(...x) : 0, yPct: y.length ? Math.max(...y) : 0 };
   })()`);
+  check("the drift keyframes exist to be read", motion?.found === true);
   check("the drift cycle is short enough to actually read as movement",
-    motion?.secs <= 40, `${motion?.secs}s`);
+    (motion?.secs ?? 99) <= 40, `${motion?.secs}s`);
   check("and it covers real ground in that time",
-    Math.max(Math.abs(motion?.travelX ?? 0), Math.abs(motion?.travelY ?? 0)) > 20,
-    `x=${Math.round(motion?.travelX ?? 0)} y=${Math.round(motion?.travelY ?? 0)}`);
+    Math.max(motion?.xPct ?? 0, motion?.yPct ?? 0) >= 3,
+    `max travel ${motion?.xPct}% x / ${motion?.yPct}% y`);
   check("and the wordmark is still the topmost thing over it",
     sky?.titleOnTop === true, "the mesh is painting over the title");
 
