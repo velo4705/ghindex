@@ -1,1 +1,22 @@
-﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0d1117"/><text x="16" y="23" font-family="ui-sans-serif,system-ui,sans-serif" font-size="19" font-weight="700" fill="#58a6ff" text-anchor="middle">gh</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!--
+    Tab icon. The wordmark's one glyph, outlined.
+
+    This was a <text> element carrying font-family="ui-sans-serif,system-ui,
+    sans-serif", which is the wrong kind of icon. Favicons render in a
+    sandboxed context where a system font stack resolves unpredictably, and
+    whichever face answers is never Space Grotesk, so the tab showed a generic
+    sans "g" directly above a page showing the real wordmark. One "g" is also
+    simply more legible than two letters: 13px of ink at a 16px tab, against
+    10px for "gh".
+
+    Recolour by editing the two fills; the path is unaffected. To re-cut the
+    glyph after a font change (see LICENSES/Space-Grotesk-OFL-1.1.txt), take
+    cmap['g'] out of SpaceGrotesk-Bold.ttf with a SVGPathPen, fit it to the
+    32 unit box with 2 units of padding, and flip Y.
+
+    One letter rather than a motif, because at 16px shape beats symbolism.
+  -->
+  <rect width="32" height="32" rx="7" fill="#1c1f24"/>
+  <path fill="#58a6ff" d="M5.71 12.41V11.78Q5.71 8.70 6.93 6.52Q8.15 4.33 10.18 3.16Q12.21 2.00 14.62 2.00Q17.30 2.00 18.68 2.95Q20.06 3.89 20.69 4.92H21.40V2.55H26.29V25.58Q26.29 27.59 25.11 28.80Q23.93 30.00 21.95 30.00H8.86V25.66H20.22Q21.32 25.66 21.32 24.48V19.39H20.61Q20.02 20.38 18.66 21.28Q17.30 22.19 14.62 22.19Q12.21 22.19 10.18 21.03Q8.15 19.86 6.93 17.68Q5.71 15.49 5.71 12.41ZM16.04 17.85Q18.33 17.85 19.86 16.39Q21.40 14.94 21.40 12.29V11.90Q21.40 9.22 19.88 7.78Q18.37 6.34 16.04 6.34Q13.75 6.34 12.21 7.78Q10.68 9.22 10.68 11.90V12.29Q10.68 14.94 12.21 16.39Q13.75 17.85 16.04 17.85Z"/>
+</svg>
