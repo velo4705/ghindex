@@ -15,7 +15,7 @@ import {
   searchCacheKey,
   normalizeSort,
 } from "./src/query.ts";
-import { handleRequest, __clearMemo } from "./src/index.ts";
+import { handleRequest, __clearMemo, sortClauseFor } from "./src/index.ts";
 
 let fail = 0;
 const eq = (name: string, got: string, want: string) => {
@@ -125,8 +125,13 @@ check("unknown params are dropped", !key("/api/search?q=x&utm_source=t").include
 // stars" request could be served the cached "best match" page for the same query
 // and page number — the reader would get a relevance list and no way to tell.
 check(
-  "the two orderings do not share a cache entry",
+  "the orderings do not share a cache entry",
   key("/api/search?q=x&page=2&sort=best") !== key("/api/search?q=x&page=2&sort=stars"),
+);
+check(
+  "recently updated is its own cache entry, not a copy of either other",
+  key("/api/search?q=x&page=2&sort=updated") !== key("/api/search?q=x&page=2&sort=best") &&
+    key("/api/search?q=x&page=2&sort=updated") !== key("/api/search?q=x&page=2&sort=stars"),
 );
 check(
   "an omitted sort is best match, not stars",
@@ -137,7 +142,23 @@ check(
   key("/api/search?q=x&sort=nonsense") === key("/api/search?q=x&sort=best"),
 );
 eq("normalizeSort keeps stars", normalizeSort("STARS"), "stars");
+eq("normalizeSort keeps updated", normalizeSort("Updated"), "updated");
 eq("normalizeSort defaults to best", normalizeSort("anything else"), "best");
+// The outbound qualifier, not just the cache key. A sort that survives
+// normalisation but is dropped on the way to GitHub would serve the same three
+// result sets under three labels, and the cache would happily keep all three.
+check(
+  "updated reaches GitHub as a real qualifier",
+  sortClauseFor("updated") === "&sort=updated",
+);
+check(
+  "stars still sends its order, updated does not invent one",
+  sortClauseFor("stars") === "&sort=stars&order=desc" && !sortClauseFor("updated").includes("order="),
+);
+check(
+  "best match sends no qualifier at all, which is GitHub's own default",
+  sortClauseFor("best") === "",
+);
 
 eq("page clamps to 1", String(clampPage("0")), "1");
 eq("page clamps to 10", String(clampPage("11")), "10");

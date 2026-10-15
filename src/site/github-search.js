@@ -174,28 +174,39 @@ function resetSeconds(res) {
  *     duplicate that qualifier and GitHub would reject it.
  */
 function pageUrl(input, page, edge, sort) {
-  // "best" is GitHub's default relevance ranking, which it applies when no sort
-  // qualifier is sent. "stars" is the explicit most-stars-first ordering.
-  const sortClause = sort === "stars" ? "&sort=stars&order=desc" : "";
-  if (edge) {
-    // sort is always sent, including for relevance.
-    //
-    // Omitting it made the relevance request byte-identical to the one the
-    // worker used to send while it hard-coded star sorting. Any HTTP cache keyed
-    // on the URL — the browser, Cloudflare, anything in between — could therefore
-    // hand a star-sorted body back for a relevance request, and nothing on the
-    // receiving end could tell the difference. Naming the ordering explicitly
-    // means a relevance request can never be answered from a star-sorted entry,
-    // however stale it is.
-    return (
-      `${edge}/api/search?q=${encodeURIComponent(String(input).trim())}` +
-      `&page=${page}&per_page=${PER_PAGE}&sort=${sort === "stars" ? "stars" : "best"}`
-    );
-  }
-  return (
-    `${API}?q=${encodeURIComponent(buildQuery(input))}` +
-    `&per_page=${PER_PAGE}${sortClause}&page=${page}`
-  );
+// "best" is GitHub's default relevance ranking, which it applies when no sort
+// qualifier is sent. "stars" is the explicit most-stars-first ordering, and
+// "updated" is most-recently-pushed-first.
+//
+// "updated" gets no `order` qualifier, matching the worker: GitHub's repository
+// search already treats it as descending, and measured against the query this
+// site sends its first page holds repos pushed seconds apart, which is the
+// live tail rather than a snapshot. Adding order=desc is accepted but is not
+// what produces that ordering.
+const sortClause = sort === "stars" ? "&sort=stars&order=desc" : sort === "updated" ? "&sort=updated" : "";
+if (edge) {
+// sort is always sent, including for relevance.
+//
+// Omitting it made the relevance request byte-identical to the one the
+// worker used to send while it hard-coded star sorting. Any HTTP cache keyed
+// on the URL — the browser, Cloudflare, anything in between — could therefore
+// hand a star-sorted body back for a relevance request, and nothing on the
+// receiving end could tell the difference. Naming the ordering explicitly
+// means a relevance request can never be answered from a star-sorted entry,
+// however stale it is.
+//
+// The three values are sent as themselves rather than folded down to
+// best/stars, so each ordering gets its own cache entry and a "recently
+// updated" request can never be served from a relevance one.
+return (
+`${edge}/api/search?q=${encodeURIComponent(String(input).trim())}` +
+`&page=${page}&per_page=${PER_PAGE}&sort=${sort}`
+);
+}
+return (
+`${API}?q=${encodeURIComponent(buildQuery(input))}` +
+`&per_page=${PER_PAGE}${sortClause}&page=${page}`
+);
 }
 
 /**
@@ -281,7 +292,13 @@ export async function searchGitHub(input, opts = {}) {
   // Relevance first. It is what GitHub ranks by when asked for nothing in
   // particular, which is what a typed query means; sorting by stars instead
   // buries the thing that matched under every popular repo that also matched.
-  const sort = opts.sort === "stars" ? "stars" : "best";
+  //
+  // The three orderings answer three different questions and none of them
+  // subsumes another: "best" finds the repo you half-remember, "stars" finds
+  // the well-known one, and "updated" finds what someone deployed minutes ago.
+  // That last one is the one a visitor arrives with when they do not yet know
+  // what they are looking for, which is why it is offered rather than derived.
+  const sort = opts.sort === "stars" || opts.sort === "updated" ? opts.sort : "best";
   const empty = { query: input, results: [], total: 0, page, pages: 0, truncated: false, sort };
   if (!q) return empty;
 

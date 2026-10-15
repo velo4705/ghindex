@@ -282,6 +282,25 @@ check("relevance sends no sort qualifier", !direct("best").includes("sort="), di
 check("most stars sends the stars qualifier",
   direct("stars").includes("sort=stars&order=desc"), direct("stars"));
 check("the two orderings are different requests", direct("best") !== direct("stars"));
+// The recency lens is the third ordering, and it is the one that most needs a
+// distinct URL: it shares the "best" query and page number with relevance, so
+// the only thing distinguishing the two requests is the sort qualifier. If that
+// were dropped on either path, a reader asking for the newest results would be
+// handed the relevance page with no way to tell.
+check("recently updated sends the updated qualifier",
+direct("updated").includes("sort=updated"), direct("updated"));
+check("and adds no order qualifier of its own",
+!direct("updated").includes("order="), direct("updated"));
+check("all three orderings are distinct requests",
+direct("best") !== direct("stars") &&
+direct("best") !== direct("updated") &&
+direct("stars") !== direct("updated"));
+check("and all three are distinct at the edge too",
+edgeUrl("best") !== edgeUrl("stars") &&
+edgeUrl("best") !== edgeUrl("updated") &&
+edgeUrl("stars") !== edgeUrl("updated"));
+check("recently updated reaches the edge worker by name",
+edgeUrl("updated").includes("sort=updated"), edgeUrl("updated"));
 // Relevance is sent explicitly. Omitting it made this URL byte-identical to the
 // one the worker used while it hard-coded star sorting, so any cache keyed on the
 // URL could answer a relevance request with a star-sorted body.

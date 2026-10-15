@@ -1183,8 +1183,8 @@ check("and the title comes before the badge in the row", badgeAlign.titleFirst =
   // be absent on arrival — checked in the arrival block above — and present here,
   // now that a tag has been chosen.
   const sortWithQuery = await evalJs(`document.querySelectorAll('#sortbar .sortbtn').length`);
-  check("the ordering control appears once there is a query",
-    sortWithQuery === 2, `${sortWithQuery} buttons`);
+check("the ordering control appears once there is a query",
+sortWithQuery === 3, `${sortWithQuery} buttons`);
 
   await evalJs(`document.querySelectorAll('#taglist .tagbtn[aria-pressed=false]')[0]?.click()`);
   await Bun.sleep(600);
@@ -1198,10 +1198,10 @@ check("and the title comes before the badge in the row", badgeAlign.titleFirst =
     // Relevance is the default and has to be visible, not merely implied.
     defaultPressed: document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort ?? '',
   })`)));
-  check("two ordering options are offered", sortbar.buttons.length === 2, `${sortbar.buttons.length}`);
-  check("they are Best match and Most stars",
-    sortbar.buttons.map((b: any) => b.label).join("/") === "Best match/Most stars",
-    sortbar.buttons.map((b: any) => b.label).join("/"));
+check("three ordering options are offered", sortbar.buttons.length === 3, `${sortbar.buttons.length}`);
+check("they are Best match, Most stars and Recently updated",
+sortbar.buttons.map((b: any) => b.label).join("/") === "Best match/Most stars/Recently updated",
+sortbar.buttons.map((b: any) => b.label).join("/"));
   check("Best match is marked current by default", sortbar.defaultPressed === "best",
     sortbar.defaultPressed);
 
@@ -1241,13 +1241,65 @@ check("and the title comes before the badge in the row", badgeAlign.titleFirst =
   check("and the results were re-fetched",
     switched.first !== "" || firstBeforeSort !== "", `${switched.first || firstBeforeSort}`);
 
-  await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="best"]')?.click()`);
-  await waitFor(
-    evalJs,
-    `document.getElementById('results')?.getAttribute('aria-busy') === 'false'`,
-  );
-  check("and back to Best match",
-    await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort`) === "best");
+await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="best"]')?.click()`);
+await waitFor(
+evalJs,
+`document.getElementById('results')?.getAttribute('aria-busy') === 'false'`,
+);
+check("and back to Best match",
+await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort`) === "best");
+
+// ---------------------------------------------------------------- third ordering
+//
+// "Recently updated" is the third lens. What can be asserted here is the control
+// itself: that it exists, that selecting it takes the pressed state, and that it
+// resets the pager like the other two. What CANNOT be asserted is that the rows
+// change, for the same reason the stars switch above does not assert its first
+// result: this suite runs against the deployed worker, which folds an
+// unrecognised sort into "best" until the change ships. A "rows differ" check
+// would fail here and pass in production, which is the exact inversion a test
+// must never have. The three orderings are pinned against the URL builder and
+// the worker's own unit tests instead.
+const third = JSON.parse(String(await evalJs(`JSON.stringify({
+buttons: [...document.querySelectorAll('#sortbar .sortbtn')].map(b => b.dataset.sort),
+label: (document.querySelector('#sortbar .sortbtn[data-sort="updated"]') || {}).textContent || '',
+})`)));
+check("the sort control offers three orderings",
+third.buttons.length === 3, third.buttons.join(","));
+check("and the third is the recency lens",
+third.buttons[2] === "updated", third.buttons.join(","));
+check("labelled for what it does",
+/recently/i.test(third.label), `"${third.label}"`);
+await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="updated"]')?.click()`);
+await waitFor(
+evalJs,
+`document.getElementById('results')?.getAttribute('aria-busy') === 'false'`,
+);
+const thirdSel = JSON.parse(String(await evalJs(`JSON.stringify({
+pressed: document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort ?? '',
+page: (document.querySelector('#results .pagebtn.current') || {}).textContent || '',
+busy: document.getElementById('results').getAttribute('aria-busy'),
+})`)));
+check("selecting the recency lens takes the pressed state",
+thirdSel.pressed === "updated", thirdSel.pressed);
+check("and restarts at page 1 like every other ordering",
+thirdSel.page === "1", `page=${thirdSel.page}`);
+check("with the busy state cleared",
+thirdSel.busy === "false", thirdSel.busy);
+// Exactly one pressed button at a time. Two lit would mean the control is
+// showing the reader two different orderings at once and cannot say which
+// produced the rows on screen.
+const pressedCount = await evalJs(
+`document.querySelectorAll('#sortbar .sortbtn[aria-pressed=true]').length`,
+);
+check("only one ordering is ever pressed at a time", pressedCount === 1, `${pressedCount} pressed`);
+await evalJs(`document.querySelector('#sortbar .sortbtn[data-sort="best"]')?.click()`);
+await waitFor(
+evalJs,
+`document.getElementById('results')?.getAttribute('aria-busy') === 'false'`,
+);
+check("and it returns to Best match",
+await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.dataset.sort`) === "best");
 
   // ------------------------------------------------------ several tags at once
 

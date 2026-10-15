@@ -59,7 +59,7 @@ const TAGS_COLLAPSED = 11;
 const state = {
   rows: [],
   total: 0,
-  /** "best" (GitHub relevance) or "stars" (most stars first). */
+  /** "best" (relevance), "stars" (most stars first) or "updated" (most recently pushed first). */
   sort: "best",
   /** Which page of results is on screen, 1-based. */
   page: 1,
@@ -127,10 +127,21 @@ function safeUrl(u) {
  * Only shown once there is a query: an ordering control above an empty page is a
  * control for something that does not exist yet.
  *
- * Deliberately two options. GitHub offers "most forks", "most recently updated"
- * and "most issues" as well, and this site cannot honour those the same way — a
- * Pages site has no meaningful fork count or issue count — so offering them would
- * be offering buttons that sort by a field nothing on the page displays.
+ * Three options, and the exclusion of forks and issues no longer holds for all
+ * of them. A Pages site has no meaningful fork count and no meaningful open
+ * issue count, so sorting by either would mean sorting by a field nothing on the
+ * page displays. Those two stay out.
+ *
+ * "Recently updated" is different in kind, and was added after that rule was
+ * written. Recency is a genuine property of a deployed site, so it is worth
+ * ordering by, and GitHub returns its live tail here: measured against the query
+ * this site sends, the first hundred results span about thirty seconds of
+ * wall-clock time. It is the ordering for a visitor who does not yet know what
+ * they are looking for, which is exactly what "best match" is worst at.
+ *
+ * The cost is yield and it is real: that page is only about a fifth Pages sites
+ * against a third for relevance, and its median repo has no stars at all. New
+ * deployments rarely do. It is a lens, not a better default.
  */
 function renderSortbar() {
   const host = $("sortbar");
@@ -143,7 +154,9 @@ function renderSortbar() {
     `<button type="button" class="sortbtn" data-sort="${value}"` +
     ` aria-pressed="${state.sort === value}">${label}</button>`;
   host.innerHTML =
-    option("best", "Best match") + option("stars", "Most stars");
+    option("best", "Best match") +
+    option("stars", "Most stars") +
+    option("updated", "Recently updated");
 }
 
 /**

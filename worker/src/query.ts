@@ -23,14 +23,31 @@ export function normalizeQuery(raw: string): string {
 }
 
 /**
- * Result ordering: GitHub's own relevance ranking, or most stars first.
- *
- * Anything unrecognised becomes "best" rather than being passed through. This
- * value ends up in an outbound URL and in a cache key, so it is reduced to one
- * of two known strings here and nowhere else.
- */
-export function normalizeSort(raw: string): "best" | "stars" {
-  return String(raw ?? "").trim().toLowerCase() === "stars" ? "stars" : "best";
+* Result ordering: GitHub's own relevance ranking, most stars first, or most
+* recently pushed first.
+*
+* Anything unrecognised becomes "best" rather than being passed through. This
+* value ends up in an outbound URL and in a cache key, so it is reduced to one
+* of three known strings here and nowhere else.
+*
+* "updated" is GitHub's live tail rather than a snapshot. Measured against the
+* real query the site sends, its first 100 results span about 30 seconds of
+* wall-clock time and the newest were pushed seconds earlier, where "best"
+* returns repos from 2024. It is the ordering a visitor wants when they do not
+* yet know what they are looking for: whatever anyone deployed most recently,
+* rather than whatever is most famous.
+*
+* The cost is yield. That same first page is only ~20% Pages sites against ~34%
+* for "best", and its median repo has 0 stars — the recent tail is mostly
+* brand-new and unranked. That is the trade, not a defect, which is why it is a
+* third button rather than the default.
+*/
+export type SortOrder = "best" | "stars" | "updated";
+
+export function normalizeSort(raw: string): SortOrder {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (v === "stars" || v === "updated") return v;
+  return "best";
 }
 
 /** Clamp a page number into the range GitHub will actually serve. */

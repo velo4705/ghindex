@@ -14,7 +14,9 @@ Like a regular search engine, **Search anything you wanted**, just to look for s
 
 This uses a **Live Index** of GitHub IO Pages loaded from keywords or tags. Perhaps, you might be able to explore some niche IO pages that you are unfamiliar with.
 
-The Search Engine has **two filters** - "Best Match" (default) and "Most stars", which appears after searching from a query.
+The Search Engine has **three orderings** - "Best match" (default), "Most stars", and "Recently updated", which appear after searching from a query.
+
+They answer three different questions, and none of them replaces the others. **Best match** finds the repository you half-remember. **Most stars** finds the well-known one. **Recently updated** finds what someone deployed minutes ago - GitHub returns its live tail here, so it is the one to use when you cannot yet name what you are looking for. Its trade is depth rather than breadth: the newest repositories are usually brand new and unranked, so roughly a fifth of that page has an IO page, against about a third for the others.
 
 Each index has a **status** whether the repository has a live IO page, or is a dead link. Each repository displays its star count, and those repositories only appear if they have a **IO page**, regardless of whether it is **live**, or at **404** (is struck-out anyway due to dead links). A third one, **blocks bots**, means the site refused the automated check - it will very likely still open fine in a browser, so don't take it for a dead link.
 
@@ -24,7 +26,9 @@ The page itself is hosted on **GitHub Pages**, but a browser can't hold a GitHub
 
 You can type anything straight into the search box, or pick tags underneath it if you can't think of what to type. The tags are just words, so picking "portfolio" and typing "resume" searches for both at once, and you can stack as many as you like - each one sits in the search box with an **×** to take it off again. Whatever combination you end up with is what gets searched.
 
-Only repositories that actually have a **IO page** are ever shown, which is why some searches come back with fewer results than you might expect. And since GitHub refuses to go past **1,000 results** for any keyword, the page is split into **10 numbered pages** - it will always tell you the real total, even the part it can't reach.
+Only repositories that actually have an **IO page** are ever shown, which is why some searches come back with fewer results than you might expect.
+
+It helps to read those numbers as a funnel, because a small result count is usually the shape of the data rather than something wrong with the search. GitHub reports how many repositories match a keyword - sometimes in the millions - but it refuses to serve past the **first 1,000 results**, so that is the most any single search can ever reach, which is why the results are split into **10 numbered pages**. Of those 1,000 repositories, only about a **third** actually have an IO page; the rest are ordinary repositories that happened to match the words. So a keyword with a seven-figure match count showing you a few dozen sites is the honest answer rather than a truncated one. The true total is always displayed, and what you can browse is always a curated slice of it.
 
 ### Why is it never cached?
 

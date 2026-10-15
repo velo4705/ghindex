@@ -123,6 +123,28 @@ function memoSet(key: string, value: { text: string; headers: Record<string, str
 }
 
 /** Exposed for tests so one test's entries cannot mask another's. */
+/**
+ * The `sort` qualifier to append to a GitHub search URL.
+ *
+ * Exported so the tests exercise the same expression that builds real requests.
+ * A copy of this logic inside the test file would pass while the shipped code
+ * quietly dropped the qualifier, which is the failure this is here to prevent.
+ */
+export function sortClauseFor(sort: "best" | "stars" | "updated"): string {
+  // "best" is GitHub's own relevance ranking and is what it returns when no
+  // qualifier is sent. Sorting by stars unconditionally would have made "best
+  // match" unreachable: GitHub ranks by text match and popularity, which is not
+  // the same order at all.
+  if (sort === "stars") return "&sort=stars&order=desc";
+  // "updated" deliberately gets no `order`. GitHub's repository search already
+  // treats "most recently updated" as descending, and measured against the query
+  // this site sends, its top results are repos pushed seconds apart — a live
+  // tail rather than a snapshot. `order=desc` is accepted on this key but is
+  // not what produces that ordering, so it is left off.
+  if (sort === "updated") return "&sort=updated";
+  return "";
+}
+
 export function __clearMemo() {
   memo.clear();
 }
@@ -308,11 +330,10 @@ async function refreshSearch(
   const withToken = Boolean(env.GITHUB_TOKEN) && !retryAfterRejection;
   if (withToken) headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
 
-  // GitHub's own relevance ranking is the default and is what it returns when no
-  // sort qualifier is sent. "Most stars" adds the qualifier explicitly. Sorting
-  // by stars unconditionally would have made "best match" unreachable: GitHub
-  // ranks by text match and popularity, which is not the same order at all.
-  const sortClause = sort === "stars" ? "&sort=stars&order=desc" : "";
+  // Ordering is resolved once, here, and both the outbound URL and the response
+  // body come from it, so what the reader was told they are looking at is what
+  // was actually fetched.
+  const sortClause = sortClauseFor(sort);
   const target =
     `${GITHUB_API}?q=${encodeURIComponent(`${q} in:name,description,readme`)}` +
     `&per_page=${perPage}${sortClause}&page=${page}`;
