@@ -28,6 +28,14 @@ const BASE = process.env.BASE ?? "http://localhost:8099";
  */
 const SEARCH_WAIT_MS = 12_000;
 
+/**
+ * Budget for the multi-keyword search, which is always cold against the live
+ * worker. Longer than SEARCH_WAIT_MS because there is no cached answer to fall
+ * back on, and still short enough that a hung request stays distinguishable from
+ * a slow one.
+ */
+const MULTI_TAG_WAIT_MS = 30_000;
+
 /** Poll until `expr` returns something truthy, or give up. */
 async function waitFor(evalJs: (e: string) => Promise<any>, expr: string, ms = SEARCH_WAIT_MS) {
   const until = Date.now() + ms;
@@ -228,7 +236,12 @@ async function runChecks(browser: string) {
 
   let failures = 0;
   const check = (name: string, ok: boolean, detail = "") => {
-    console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
+    // The detail is reported on failure even when it is empty. A check that reads
+    // a DOM string gets "" when the element is absent, and the old truthiness test
+    // swallowed exactly that: the run printed a bare "FAIL" with no explanation,
+    // which reads as a claim about the feature when it is really a timing report.
+    const suffix = ok ? "" : ` — ${detail === "" ? "(nothing rendered)" : detail}`;
+    console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${suffix}`);
     if (!ok) failures++;
   };
 
@@ -1408,12 +1421,26 @@ await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.da
     JSON.stringify(JSON.parse(String(multi)).pressed));
   check("and a clear-all control appears", JSON.parse(String(multi)).hasClear === true);
 
-  await waitFor(
-    evalJs,
-    `!/Searching/.test(document.getElementById('results').textContent) &&
-     document.querySelectorAll('#results .row').length > 0`,
-  );
-  const bothTerms = await evalJs(`(document.querySelector('#results p.note') || {}).textContent || ''`);
+/**
+     * This is the slowest step in the file, deliberately: it is the first query
+     * nobody has run, so it is a guaranteed cache miss against a live worker and a
+     * live GitHub. waitFor returns null rather than throwing, so an overrun used to
+     * fall straight through and fail the *next* assertion instead, with no sign
+     * that the real problem was elapsed time rather than a wrong summary.
+     *
+     * So the wait is asserted and given room. A timeout now reports as a timeout.
+     */
+    const settledTags = await waitFor(
+      evalJs,
+      `!/Searching/.test(document.getElementById('results').textContent) &&
+       document.querySelectorAll('#results .row').length > 0`,
+      MULTI_TAG_WAIT_MS,
+    );
+    check("the two-keyword search settles", settledTags !== null,
+      settledTags === null
+        ? `no rows within ${MULTI_TAG_WAIT_MS}ms - slow upstream, not a wrong result`
+        : "");
+    const bothTerms = await evalJs(`(document.querySelector('#results p.note') || {}).textContent || ''`);
   check("the summary reports both keywords",
     /keywords:/.test(bothTerms) && / and /.test(bothTerms),
     bothTerms.slice(0, 90));
