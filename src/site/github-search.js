@@ -37,18 +37,34 @@
 const RESULT_CAP = 1000;
 
 /**
- * Results per API call. 100 is the maximum the search API allows, and it is
- * worth using: the unauthenticated budget is 10 calls/minute, so per_page=30
- * would reach 300 repos total while per_page=100 reaches 1,000. Same number of
- * requests, ten times the coverage.
+ * Results per API call.
+ *
+ * 100 is the maximum the search API allows and would reach the same 1,000
+ * results in 10 requests instead of 25. It is not used, because the number of
+ * pages and the page size are not independent: GitHub serves page N only while
+ * its first result falls inside the first 1,000, i.e. (page - 1) * per_page is
+ * under 1,000. At 100 that caps the pager at 10 pages; at 40 it reaches 25.
+ *
+ * Forty-one is the largest page size that still allows a 25th page, but it would
+ * leave that last page holding 16 results rather than 40, so 40 is used and every
+ * page is the same size.
  */
-const PER_PAGE = 100;
+const PER_PAGE = 40;
 
 /**
- * Pages fetched per search. GitHub serves at most 10 pages of 100, which is
- * exactly the 1,000-result cap; asking for an 11th returns HTTP 422.
+ * Pages reachable per search. Not a free choice: it is the largest N for which
+ * (N - 1) * PER_PAGE still sits under GitHub's 1,000-result ceiling, so this and
+ * PER_PAGE are two views of the same limit. Twenty-five pages of forty still
+ * reach exactly 1,000 results. Page 26 would begin at result 1,000, and GitHub
+ * answers that with HTTP 422, "Only the first 1000 search results are
+ * available".
+ *
+ * Twenty-five rather than ten because a pager the reader can stop partway through
+ * is worth more than a longer one they cannot, and 40 results a page means less
+ * scrolling to reach the same place. The cost is real: reaching the end costs 25
+ * requests instead of 10, against a budget shared by every visitor.
  */
-const MAX_PAGES = 10;
+const MAX_PAGES = 25;
 
 const API = "https://api.github.com/search/repositories";
 
@@ -123,6 +139,8 @@ export const buildQueryForTest = buildQuery;
 
 /** Exposed for tests only. */
 export const MAX_PAGES_FOR_TEST = MAX_PAGES;
+/** Exposed so the results summary can offset by the real page size. */
+export const PER_PAGE_FOR_TEST = PER_PAGE;
 export const pageUrlForTest = pageUrl;
 
 /**

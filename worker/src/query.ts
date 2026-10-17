@@ -54,14 +54,16 @@ export function normalizeSort(raw: string): SortOrder {
 export function clampPage(raw: string | null): number {
   const n = Number.parseInt(String(raw ?? "1"), 10);
   if (!Number.isFinite(n) || n < 1) return 1;
-  // GitHub returns HTTP 422 for page 11 of a search, so never ask for one.
-  return Math.min(n, 10);
+  // GitHub serves page N only while its first result is inside the first 1,000.
+  // With the per_page this site sends, that allows 25 pages; page 26 starts at
+  // result 1,000 and comes back HTTP 422.
+  return Math.min(n, 25);
 }
 
 /** Clamp per_page into the 1..100 the search API accepts. */
 export function clampPerPage(raw: string | null): number {
-  const n = Number.parseInt(String(raw ?? "100"), 10);
-  if (!Number.isFinite(n) || n < 1) return 100;
+  const n = Number.parseInt(String(raw ?? "40"), 10);
+  if (!Number.isFinite(n) || n < 1) return 40;
   return Math.min(n, 100);
 }
 

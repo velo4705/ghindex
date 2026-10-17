@@ -437,6 +437,44 @@
 
   .searchbox { position: relative; margin-top: 2rem; }
 
+    /*
+       "Surprise me" sits under the field rather than beside it. At the width the
+       hero occupies, a button beside the field would either squeeze the field
+       below a comfortable measure or push the button onto its own line anyway,
+       and which of those happens would depend on the viewport. Underneath it is
+       the same place on every screen.
+
+       Deliberately quiet. It is a second way in, not the main act: the search
+       field above it is the thing the page is for, and a control styled to
+       compete would be claiming to be the primary action when it is the fallback.
+    */
+    .surprise {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      margin: .7rem auto 0;
+      padding: .32rem .8rem;
+      font: inherit;
+      font-size: .84rem;
+      color: var(--fg-muted);
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: var(--r-full);
+      cursor: pointer;
+      transition: color var(--fast), border-color var(--fast), background var(--fast);
+    }
+    .surprise:hover {
+      color: var(--accent);
+      border-color: color-mix(in srgb, var(--border) 45%, var(--accent));
+      background: var(--accent-soft);
+    }
+    .surprise:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .surprise svg { width: .95rem; height: .95rem; flex: 0 0 auto; }
+    .surprise[disabled] { opacity: .55; cursor: default; }
+
   /*
      The border lives on a wrapper rather than the input, so a topic chip can sit
      inside the field beside the text. With the border on the input itself there
@@ -999,6 +1037,25 @@
           <input id="q" name="q" type="search" autocomplete="off" spellcheck="false"
                  placeholder="Search owner, repo, title or topic…" />
         </div>
+        <!--
+          "Surprise me" takes a visitor somewhere instead of showing them more
+          choices. It exists because the two questions this page answers are not
+          the same one: a search serves someone who knows what they are after,
+          and a browser with no idea is the harder case to help. Asking that
+          visitor to guess a tag is the exact thing they cannot do.
+
+          It navigates in the same tab, like the button of the same idea this is
+          borrowed from. Opening a new tab would strand them on an empty search
+          result they never asked for, behind the thing they did ask for.
+        -->
+        <button type="button" class="surprise" id="surprise">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/>
+            <path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/>
+          </svg>
+          <span id="surprise-label">Surprise me</span>
+        </button>
       </form>
     </div>
 

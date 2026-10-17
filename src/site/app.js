@@ -54,6 +54,28 @@ const LIVE_CHECK_CHUNK = 6;
  */
 const TAGS_COLLAPSED = 11;
 
+/**
+ * Fallback genre list for "Surprise me" when the taxonomy has not loaded.
+ *
+ * Taken from the purpose-based categories rather than invented here, so the two
+ * cannot drift: if the picker loads first — which it normally does — this is
+ * never consulted and the same closed set drives both. Kept as a literal only
+ * because the click handler cannot await an import before deciding what to
+ * search for, and a failed taxonomy must not take the button down with it.
+ */
+const SURPRISE_GENRES = ["portfolio", "games", "docs", "blog", "dashboards", "tools", "learning", "showcase", "libraries"];
+
+/**
+ * Results the search backend fetches per page.
+ *
+ * Duplicated here rather than imported because `github-search.js` is loaded
+ * lazily on first search, while the summary line renders on every results
+ * update and must not depend on that import having resolved. It has to agree
+ * with the backend's own page size, or the "results 1-40" offsets lie. The
+ * front-end suite asserts the two are equal.
+ */
+const RESULTS_PER_PAGE = 40;
+
 // ---------------------------------------------------------------- state
 
 const state = {
@@ -655,8 +677,11 @@ function summaryHtml() {
   const n = state.rows.length;
   const bits = [`${n.toLocaleString()} Pages site${n === 1 ? "" : "s"} on this page`];
   if (state.pageCount > 1) {
-    const first = (state.page - 1) * 100 + 1;
-    const last = (state.page - 1) * 100 + n;
+    // Offset by the real page size. This used to be a literal 100, which was
+    // correct while the pager held 100 results and silently lied the moment the
+    // page size changed: page 5 of 40 is results 161-200, not 401-440.
+    const first = (state.page - 1) * RESULTS_PER_PAGE + 1;
+    const last = (state.page - 1) * RESULTS_PER_PAGE + n;
     bits.push(`results ${first.toLocaleString()}–${last.toLocaleString()}`);
   }
   if (state.picked.length) {
@@ -733,6 +758,91 @@ $("q").addEventListener("input", () => {
   clearTimeout(debounce);
   debounce = setTimeout(() => runSearch({ fresh: true }), DEBOUNCE_MS);
 });
+
+/**
+ * "Surprise me": send the visitor to one live Pages site, chosen at random.
+ *
+ * Why this is not just "search for a random word"
+ * -------------------------------------------------
+ * The hardest visitor to help is the one with no query. Everything else on this
+ * page asks them to supply something — a name, a keyword, a topic — and someone
+ * browsing has none of those yet. This is the one control that does not.
+ *
+ * The genre is random too, not just the site. Picking a random repo from a
+ * single broad query would return the same popular handful every time, because
+ * relevance ranking puts the same projects at the top. Choosing first from the
+ * closed set of purpose-based categories is what makes repeat clicks land in
+ * genuinely different places: a portfolio, then a game, then a dashboard.
+ *
+ * Liveness is checked before navigating, not after
+ * -------------------------------------------------
+ * A random pick is mostly useless if it lands on a 404. The index contains dead
+ * links, and a dead link is a much worse "surprise" than a boring one, so
+ * candidates are probed first and only a site answered "alive" is opened.
+ *
+ * What it costs: one search plus one batched liveness check, both against the
+ * shared rate limit. It is one request per click, not a walk of the corpus.
+ *
+ * Navigating in the same tab is deliberate. Opening a new tab would leave the
+ * visitor on a search result they never asked for, behind the thing they did.
+ */
+async function surpriseMe() {
+  const btn = $("surprise");
+  const label = $("surprise-label");
+  if (!btn || btn.disabled) return;
+  // Superseded by a second click, and by anything the visitor types: both
+  // replace the intent, so the first request should stop costing anything.
+  state.inflight?.abort();
+  const ctrl = new AbortController();
+  state.inflight = ctrl;
+  btn.disabled = true;
+  const original = label.textContent;
+  label.textContent = "Finding one…";
+
+  try {
+    const { searchGitHub, verifyLivenessBatch } = await import("./github-search.js");
+    // A random purpose-based category. `state.tags` is the picker list once it has
+    // loaded; the closed set is the fallback so this works even if the visitor
+    // clicks before the taxonomy arrives, or if it failed to load entirely.
+    const pool = state.tags?.length ? state.tags : SURPRISE_GENRES;
+    const genre = pool[Math.floor(Math.random() * pool.length)];
+    const res = await searchGitHub(genre, { signal: ctrl.signal, page: 1 });
+
+    // Candidates are every Pages site on the page, not one of them: probing a
+    // single random row means a dead link a fraction of the time, and the whole
+    // point is that the visitor is sent somewhere that works. `safeUrl` is the
+    // same guard every result row goes through, so nothing reaches `location`
+    // that would not already be rendered as a link.
+    const candidates = (res?.results ?? [])
+      .map((r) => safeUrl(r.url))
+      .filter(Boolean)
+      .slice(0, LIVE_CHECK_CHUNK);
+    if (!candidates.length) throw new Error("nothing to open");
+
+    const verdicts = await verifyLivenessBatch(candidates, { signal: ctrl.signal });
+    const alive = candidates.filter((u) => verdicts.get(u)?.verdict === "alive");
+    // Fall back to an unchecked candidate rather than failing. A site nobody
+    // could answer for is not known to be dead, and the visitor asked to be
+    // sent somewhere, not to be told the corpus was unreachable.
+    const target = alive.length ? alive[Math.floor(Math.random() * alive.length)] : candidates[0];
+
+    state.inflight = null;
+    btn.disabled = false;
+    label.textContent = original;
+    window.location.href = target;
+  } catch (err) {
+    if (err && err.name === "AbortError") return;
+    state.inflight = null;
+    btn.disabled = false;
+    label.textContent = original;
+    // Said in the button rather than as a page-level error: nothing failed, the
+    // visitor simply gets no surprise, and replacing the results area with an
+    // error for a control they pressed once would be far too loud.
+    label.textContent = "Couldn't find one — try again";
+  }
+}
+
+$("surprise")?.addEventListener("click", surpriseMe);
 
 /**
  * Paging, delegated because the pager is re-rendered on every update.

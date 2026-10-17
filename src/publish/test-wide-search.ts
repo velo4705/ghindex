@@ -89,7 +89,7 @@ type Call = { url: string };
  * Stub fetch to serve `perPage` items per page from a pool, so the test can
  * assert how many requests a given `pages` argument costs.
  */
-function stubPool(pool: unknown[], total: number, perPage = 100) {
+function stubPool(pool: unknown[], total: number, perPage = 40) {
   const calls: Call[] = [];
   globalThis.fetch = (async (url: string) => {
     calls.push({ url });
@@ -126,14 +126,19 @@ console.log("=== one page costs exactly one call ===");
   check("and it is page 3 that was requested",
     calls.every((c) => c.url.includes("page=3")),
     calls.map((c) => c.url).join(", "));
-  check("per_page is 100, not 30", calls.every((c) => c.url.includes("per_page=100")));
+  // 40 is what the 25-page pager requires: GitHub serves page N only while
+  // (N - 1) * per_page is under its 1,000-result ceiling.
+  check("per_page is 40, which is what 25 pages requires",
+    calls.every((c) => c.url.includes("per_page=40")));
   check("sorted by stars, descending",
     r.results.every((x, i, a) => i === 0 || a[i - 1].stars >= x.stars));
   check("has_pages=false rows are dropped",
     r.results.every((x) => !x.full_name.startsWith("nope")));
   eq("the result names its page", String(r.page), "3");
-  // Page 3 of a 250-item pool is the tail, so fewer than 100 rows come back.
-  check("only that page's rows come back", r.results.length === 50 ? "ok" : `got ${r.results.length}`);
+  // The pool is 250 Pages items followed by 50 that must be filtered out. Page 3
+  // of 40 starts at offset 80, so it is still inside the Pages region and returns
+  // a full 40 rows. The filtering is asserted separately below.
+  check("only that page's rows come back", r.results.length === 40 ? "ok" : `got ${r.results.length}`);
 }
 
 {
@@ -142,7 +147,7 @@ console.log("=== one page costs exactly one call ===");
   const r = await searchGitHub("portfolio", { page: 1 });
   globalThis.fetch = realFetch;
   eq("page 1 costs one call", String(calls.length), "1");
-  check("one page returns 100 rows", r.results.length === 100 ? "ok" : `got ${r.results.length}`);
+  check("one page returns a full 40 rows", r.results.length === 40 ? "ok" : `got ${r.results.length}`);
 }
 
 {
@@ -162,8 +167,14 @@ console.log("=== how many pages exist ===");
   check("page count is the reachable one, not the reported total",
     pageCount(7354) === MAX_PAGES_FOR_TEST, `got ${pageCount(7354)}`);
   check("a short result set is one page", pageCount(40) === 1, `got ${pageCount(40)}`);
-  check("exactly 100 results is one page", pageCount(100) === 1, `got ${pageCount(100)}`);
-  check("101 results is two pages", pageCount(101) === 2, `got ${pageCount(101)}`);
+  // Page boundaries follow the 40-per-page the pager actually requests.
+  check("exactly 40 results is one page", pageCount(40) === 1, `got ${pageCount(40)}`);
+  check("41 results is two pages", pageCount(41) === 2, `got ${pageCount(41)}`);
+  check("80 results is two full pages", pageCount(80) === 2, `got ${pageCount(80)}`);
+  check("81 results spills into a third", pageCount(81) === 3, `got ${pageCount(81)}`);
+  // The reachable count is the same 1,000 whichever way it is sliced.
+  check("a pool of exactly 1,000 fills every page",
+    pageCount(1000) === MAX_PAGES_FOR_TEST, `got ${pageCount(1000)}`);
   check("no results is no pages", pageCount(0) === 0, `got ${pageCount(0)}`);
 
   const calls = stubPool(pool, 7354);

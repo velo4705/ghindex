@@ -161,10 +161,20 @@ check(
 );
 
 eq("page clamps to 1", String(clampPage("0")), "1");
-eq("page clamps to 10", String(clampPage("11")), "10");
+eq("page clamps to 25", String(clampPage("26")), "25");
+eq("page 25 survives the clamp", String(clampPage("25")), "25");
 eq("page rejects junk", String(clampPage("abc")), "1");
 eq("per_page clamps to 100", String(clampPerPage("500")), "100");
-eq("per_page defaults to 100", String(clampPerPage(null)), "100");
+eq("per_page defaults to 40", String(clampPerPage(null)), "40");
+eq("per_page accepts 40, the size the 25-page pager needs", String(clampPerPage("40")), "40");
+// The two clamps are one limit seen twice: GitHub serves page N only while
+// (N - 1) * per_page is under its 1,000-result ceiling. If either moves without
+// the other, the worker starts requesting a page GitHub rejects with HTTP 422.
+check("page 26 is refused, so the pager cannot ask for one",
+  clampPage("26") === 25);
+check("25 pages of the default size sit inside the ceiling",
+  (clampPage("25") - 1) * clampPerPage(null) < 1000,
+  `${(clampPage("25") - 1) * clampPerPage(null)}`);
 
 // ================================================================= SSRF
 

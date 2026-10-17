@@ -288,6 +288,42 @@ async function runChecks(browser: string) {
   check("and the arriving page does not scroll", a.noScroll === true);
   check("the hero is centred on the page", a.heroOffset <= 2, `${a.heroOffset}px off centre`);
 
+  // ------------------------------------------------------------- surprise me
+  //
+  // A second way into the site for someone with no query. What matters is that it
+  // is present, reachable by keyboard, sits inside the arriving view without
+  // making the page scroll, and cannot navigate anywhere that is not a Pages
+  // site. The navigation itself is NOT exercised: it would leave the page under
+  // test and take the rest of the suite with it.
+  const surprise = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+    const b = document.querySelector('#surprise');
+    if (!b) return { present: false };
+    const r = b.getBoundingClientRect();
+    return {
+      present: true,
+      tag: b.tagName,
+      type: b.getAttribute('type'),
+      label: (document.querySelector('#surprise-label') || {}).textContent || '',
+      focusable: b.tabIndex >= 0 || ['BUTTON', 'A'].includes(b.tagName),
+      insideHero: r.top > 0 && r.bottom < window.innerHeight,
+      noScroll: document.documentElement.scrollHeight <= window.innerHeight + 1,
+      centred: Math.abs((r.left + r.right) / 2 - document.documentElement.clientWidth / 2),
+      belowField: r.top >= document.querySelector('.searchfield').getBoundingClientRect().bottom,
+    };
+  })())`)));
+  check("there is a Surprise me control", surprise.present === true);
+  check("and it is a real button, not a div",
+    surprise.tag === "BUTTON" && surprise.type === "button", `${surprise.tag}/${surprise.type}`);
+  check("labelled for what it does", /surprise/i.test(surprise.label || ""), surprise.label);
+  check("reachable by keyboard", surprise.focusable === true);
+  check("offered on arrival, before any query", surprise.present === true);
+  check("and it fits the arriving view without scrolling",
+    surprise.noScroll === true && surprise.insideHero === true,
+    `noScroll=${surprise.noScroll} insideHero=${surprise.insideHero}`);
+  check("centred under the search field",
+    surprise.centred <= 2 && surprise.belowField === true,
+    `${surprise.centred}px off centre, belowField=${surprise.belowField}`);
+
   // "Dead centre" means the middle of the screen, not the middle of a column, and
   // not the top. The box sat 24px high at every desktop size until the hero's
   // top padding was set to cancel the asymmetry between the title above and the
@@ -831,8 +867,11 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
     };
   })())`);
   const p2 = JSON.parse(String(onPage2));
+  // The offset follows the page size actually requested, not a literal. Page 2 of
+  // 40 begins at result 41; this asserted 101 while the pager held 100 per page,
+  // and would have carried on lying the moment the page size changed.
   check("the summary reports the position in the result set",
-    /results 101/.test(p2.note), p2.note.slice(0, 80));
+    /results 41/.test(p2.note), p2.note.slice(0, 80));
 
   // Jumping straight back has to work: with only a "next" control, a reader on
   // page 8 has no way home.
@@ -1123,7 +1162,7 @@ check("and the title comes before the badge in the row", badgeAlign.titleFirst =
     const grab = async (sort) => {
       const r = await fetch(
         'https://ghindex-search.ghindex.workers.dev/api/search' +
-        '?q=' + encodeURIComponent('portfolio') + '&page=1&per_page=100&sort=' + sort);
+        '?q=' + encodeURIComponent('portfolio') + '&page=1&per_page=40&sort=' + sort);
       const j = await r.json();
       return (j.items ?? []).filter(i => i.has_pages).slice(0, 5).map(i => i.full_name);
     };

@@ -271,9 +271,13 @@ for (const f of ["app.js", "github-search.js", "taxonomy.js"]) {
 // star-sort until this change ships. These assert the contract the worker will be
 // asked for once it does.
 
-const { pageUrlForTest } = (await import(
+const { pageUrlForTest, MAX_PAGES_FOR_TEST, PER_PAGE_FOR_TEST } = (await import(
   join(SITE, "github-search.js")
-)) as { pageUrlForTest: (input: string, page: number, edge: string | null, sort: string) => string };
+)) as {
+  pageUrlForTest: (input: string, page: number, edge: string | null, sort: string) => string;
+  MAX_PAGES_FOR_TEST: number;
+  PER_PAGE_FOR_TEST: number;
+};
 
 const direct = (sort: string) => pageUrlForTest("portfolio", 2, null, sort);
 const edgeUrl = (sort: string) => pageUrlForTest("portfolio", 2, "https://edge.test", sort);
@@ -312,11 +316,81 @@ check("the GitHub API omits the qualifier for relevance", !direct("best").includ
 check("most stars reaches the edge worker as sort=stars",
   edgeUrl("stars").includes("sort=stars"), edgeUrl("stars"));
 check("page and per_page survive either ordering",
-  direct("best").includes("page=2") && direct("stars").includes("page=2"));
+direct("best").includes("page=2") && direct("stars").includes("page=2"));
+
+// ---------------------------------------------------------------- pagination depth
+//
+// The pager and the page size are not independent. GitHub serves page N only
+// while (N - 1) * per_page is under its 1,000-result ceiling, so one determines
+// the other. These assert the pair is coherent, and that the two places that
+// must agree on the page size actually do.
+check("the pager reaches 25 pages", MAX_PAGES_FOR_TEST === 25, `${MAX_PAGES_FOR_TEST}`);
+check("a page holds 40 results", PER_PAGE_FOR_TEST === 40, `${PER_PAGE_FOR_TEST}`);
+check("25 pages of 40 reaches exactly the 1,000-result ceiling",
+  MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST === 1000,
+  `${MAX_PAGES_FOR_TEST} x ${PER_PAGE_FOR_TEST}`);
+check("the last page is inside the ceiling GitHub will serve",
+  (MAX_PAGES_FOR_TEST - 1) * PER_PAGE_FOR_TEST < 1000,
+  `page ${MAX_PAGES_FOR_TEST} starts at ${(MAX_PAGES_FOR_TEST - 1) * PER_PAGE_FOR_TEST}`);
+// The next page must be out of reach, or 25 was not the maximum and the reader
+// is being offered a page that will fail with HTTP 422.
+check("and page 26 would be rejected, so 25 really is the ceiling",
+  MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST >= 1000,
+  `page ${MAX_PAGES_FOR_TEST + 1} starts at ${MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST}`);
+// The summary line offsets by this number to label where you are. It is declared
+// separately in app.js because that module loads the search backend lazily; the
+// two drifting apart would make every "results 1-40" range a lie.
+check("the summary's page size matches the backend's",
+  /const RESULTS_PER_PAGE = 40/.test(app), "RESULTS_PER_PAGE in app.js");
+check("and the summary uses it rather than a literal",
+  /RESULTS_PER_PAGE \+ 1/.test(app) && /RESULTS_PER_PAGE \+ n/.test(app),
+  "offset arithmetic reads the constant");
 
 // An unchecked row is shown as live. "unverified" was the absence of a finding
 // dressed up as one, and it was the badge most people saw.
 check("the page has no 'unverified' badge", !/text: "unverified"/.test(app));
+
+// ---------------------------------------------------------------- surprise me
+//
+// The control navigates to a URL built from GitHub data. That makes it the one
+// place on the page where an attacker-controlled string reaches `location`, so
+// it has to clear exactly the same guard the result links clear. These are
+// source-level checks on purpose: the navigation is not exercised in a test
+// because doing so would leave the page under test.
+check("the surprise button exists and says so",
+  /id="surprise"/.test(html) && /surprise-label/.test(html));
+check("it is a real button inside the search form",
+  /<button[^>]*type="button"[^>]*class="surprise"/.test(html), "markup shape");
+check("its label is inside the button so it can be swapped",
+  /id="surprise-label"/.test(html));
+// The load-bearing check: nothing reaches `location` without going through the
+// same helper every rendered result row goes through.
+check("every candidate URL passes through safeUrl",
+  /\.map\(\(r\) => safeUrl\(r\.url\)\)/.test(appCode) ||
+  /safeUrl\(r\.url\)/.test(appCode),
+  "candidate mapping");
+check("the navigation target is only ever a safeUrl result",
+  /const candidates =[\s\S]{0,240}?safeUrl\(/.test(appCode) &&
+  /window\.location\.href = target/.test(appCode),
+  "assign from the filtered list");
+check("candidates are filtered before use, not after",
+  /\.filter\(Boolean\)/.test(appCode), "filter(Boolean)");
+// Liveness is the point of the control: a random dead link is a bad surprise.
+check("it checks a candidate is alive before opening it",
+  /verifyLivenessBatch/.test(appCode) && /verdict === "alive"/.test(appCode));
+check("and it probes several candidates rather than trusting one random row",
+  /\.slice\(0, LIVE_CHECK_CHUNK\)/.test(appCode), "slice to the batch size");
+// A genre is chosen first, which is what makes repeat clicks differ.
+check("the genre is chosen at random from a list",
+  /Math\.random\(\) \* pool\.length/.test(appCode) || /pool\[Math\.floor\(Math\.random\(\)/.test(appCode));
+check("and the fallback genre list is not invented inline",
+  /const SURPRISE_GENRES = \[/.test(appCode) && /portfolio.*games.*docs.*blog/.test(appCode),
+  "matches the purpose-based categories");
+// A second click supersedes the first rather than racing it.
+check("a second press aborts the first",
+  /state\.inflight\?\.abort\(\)/.test(appCode), "abort before starting");
+check("the button is disabled while it works, so it cannot be double-fired",
+  /btn\.disabled = true/.test(appCode) && /if \(!btn \|\| btn\.disabled\) return/.test(appCode));
 check("an unchecked verdict renders as live", /error: \{ cls: "live-alive", text: "live" \}/.test(app));
 
 console.log(
