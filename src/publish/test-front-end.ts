@@ -382,8 +382,31 @@ check("the opened tab is given the address later, not at open time",
   /tab\.location\.replace\(target\)/.test(appCode), "tab.location.replace");
 check("the opener is severed so the site cannot reach back into this page",
   /tab\.opener = null/.test(appCode));
-check("a tab that is never used gets closed again",
-  /tab\.close\(\)/.test(appCode), "no stray blank tabs");
+check("a tab whose attempt failed is explained, not closed",
+  /const discard = \(\) => \{[\s\S]{0,200}?surpriseTabFailed\(tab\)/.test(appCode) &&
+  !/const discard = \(\) => \{[\s\S]{0,200}?tab\.close\(\)/.test(appCode),
+  "discard() must explain in the tab");
+// A blank white tab and a slow tab look identical from the outside, so a visitor
+// cannot tell a working control from a broken one. The tab has to say what it is
+// doing while it waits.
+check("the waiting tab is written to, not left blank",
+  /tab\.document\.write\(SURPRISE_WAIT_PAGE\)/.test(appCode), "wait page written");
+check("and it says so, rather than sitting there looking dead",
+  /Finding you something/.test(appCode) && /takes a second/.test(appCode),
+  "wait page explains itself");
+check("the wait page actually spins",
+  /\.ring \{[\s\S]{0,320}?animation:spin/.test(appCode), "ring must animate");
+check("reduced motion stops the spin without removing the indicator",
+  /prefers-reduced-motion[\s\S]{0,200}?\.ring \{[^}]*animation:none/.test(appCode) &&
+  /prefers-reduced-motion[\s\S]{0,200}?\.ring \{[^}]*border-top-color:var\(--border\)/.test(appCode),
+  "stopped, not deleted");
+check("it is styled as part of this site, in both themes",
+  /--bg:#f4f2ee/.test(appCode) && /--bg:#1c1f24/.test(appCode) &&
+  /prefers-color-scheme: dark/.test(appCode), "matches site colours");
+check("a tab that cannot be indexed should not be",
+  /content="noindex"/.test(appCode), "noindex");
+check("if the attempt fails, the tab is told why instead of disappearing",
+  /Nothing to send you to/.test(appCode), "failure page explains itself");
 check("and if the popup is blocked, it still opens the site",
   /if \(tab\) \{[\s\S]{0,120}?tab\.location\.replace\(target\)/.test(appCode) &&
   /\} else \{[\s\S]{0,300}?window\.location\.href = target/.test(appCode),

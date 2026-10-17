@@ -785,16 +785,82 @@ $("q").addEventListener("input", () => {
  *
  * Why the tab is opened before the answer is known
  * ------------------------------------------------
- * It opens in a new tab, which means a blank one, because a popup blocker only
- * honours a request made *during* the click. By the time this has searched and
- * probed, the browser has decided no gesture is in progress and will silently
- * refuse the window. So the tab is opened empty and synchronously, and its
- * address is set a moment later.
+ * A popup blocker only honours a window opened *during* the click. By the time
+ * this has searched and probed, the browser has decided no gesture is in
+ * progress and will silently refuse the window. So the tab is opened
+ * synchronously, written to, and its address set a moment later.
  *
- * That trades a tab that sits empty for a second for a control that works at
- * all. The window is closed again if the search finds nothing, so the only way
- * to end up with a stray blank tab is to leave during the search.
+ * The tab is written to rather than left blank, because a blank white tab that
+ * sits there for a second is indistinguishable from a broken button. Nobody
+ * knows whether to wait, and a control that looks broken loses trust faster than
+ * one that is slow. It says what it is doing, spins while it works, and adopts
+ * the page's own colours so it looks like part of the site rather than a stray
+ * window.
  */
+const SURPRISE_WAIT_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ghindex</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#f4f2ee; --fg:#2b3138; --muted:#5c6672; --accent:#0969da; --border:#e0dcd5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1c1f24; --fg:#d4dae1; --muted:#9aa4b0; --accent:#58a6ff; --border:#33383f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center;
+         background:var(--bg); color:var(--fg);
+         font:400 15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .box { text-align:center; padding:2rem 1.5rem; max-width:30rem; }
+  h1 { margin:0 0 .5rem; font-size:1.15rem; font-weight:600; letter-spacing:-.01em; }
+  p { margin:0; color:var(--muted); font-size:.9rem; }
+  .ring { width:1.6rem; height:1.6rem; margin:0 auto 1.1rem;
+          border:2px solid color-mix(in srgb, var(--accent) 20%, transparent);
+          border-top-color:var(--accent); border-radius:999px;
+          animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    /* The ring stops rather than vanishing: a blank gap where the spinner was
+       would look like the load had stalled, which is the opposite of the truth. */
+    .ring { animation:none; border-top-color:var(--border); }
+  }
+  /* Nothing here can be clicked or focused; it is a status, not a page. */
+  body { user-select:none; }
+</style></head>
+<body><div class="box" id="b">
+  <div class="ring" role="img" aria-label="Loading"></div>
+  <h1>Finding you something</h1>
+  <p>Looking for a live Pages site. This takes a second.</p>
+</div></body></html>`;
+
+/**
+ * Replace the waiting tab's contents with an explanation.
+ *
+ * The alternative is closing it, which is worse: the visitor who clicked is now
+ * looking at a tab that said "Finding you something" when it vanished, with no
+ * idea whether the button failed or they did something wrong. Saying so in place
+ * leaves them with an answer, which is the only thing that was missing.
+ */
+function surpriseTabFailed(tab) {
+  try {
+    const d = tab?.document;
+    if (!d || tab.closed) return;
+    d.open();
+    d.write(
+      SURPRISE_WAIT_PAGE.replace(
+        /<div class="ring"[\s\S]*?<\/div>\s*<h1>[\s\S]*?<\/h1>\s*<p>[\s\S]*?<\/p>/,
+        '<h1>Nothing to send you to</h1>' +
+          '<p>No live site answered this time. Go back and try again.</p>',
+      ),
+    );
+    d.close();
+  } catch {
+    // The tab is gone or has become cross-origin. Nothing to explain in.
+  }
+}
+
 async function surpriseMe() {
   const btn = $("surprise");
   const label = $("surprise-label");
@@ -803,10 +869,26 @@ async function surpriseMe() {
   // Synchronous, before any await. This is the whole reason the tab appears at
   // all; moving this line below the search is what makes it silently blocked.
   const tab = window.open("", "_blank");
-  // No opener: the opened site gets no handle on this page, and its back button
-  // does not walk through here. Set on the opener side because that is the only
-  // way to do it for a window whose address we assign later.
-  if (tab) tab.opener = null;
+  if (tab) {
+    // Written immediately, while the tab is still the empty document we just
+    // made. Doing it after the search would work no better and would leave a
+    // white flash to stare at.
+    try {
+      tab.document.open();
+      tab.document.write(SURPRISE_WAIT_PAGE);
+      tab.document.close();
+      // Focus the new tab: the visitor asked to be taken somewhere, and a window
+      // that opens behind the one they clicked is a tab they have to go and find.
+      tab.focus();
+    } catch {
+      // A cross-origin or already-closed tab. It still navigates below, just
+      // without the explanation in it.
+    }
+    // No opener: the opened site gets no handle on this page, and its back
+    // button does not walk through here. Set on the opener side because that is
+    // the only way to do it for a window whose address we assign later.
+    tab.opener = null;
+  }
 
   // Superseded by a second click, and by anything the visitor types: both
   // replace the intent, so the first request should stop costing anything.
@@ -819,11 +901,13 @@ async function surpriseMe() {
 
   // A tab the visitor did not ask to keep, if this attempt does not finish.
   // Called on the paths that bail out; the success path hands over ownership.
+  // It explains itself rather than closing, so the tab never vanishes while
+  // still claiming to be finding something.
   const discard = () => {
     state.inflight = null;
     btn.disabled = false;
     label.textContent = original;
-    if (tab && !tab.closed) tab.close();
+    surpriseTabFailed(tab);
   };
 
   try {
