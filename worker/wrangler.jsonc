@@ -14,10 +14,19 @@
   "name": "ghindex-search",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
-  "workers_dev": true,
-  // Off explicitly. This worker holds a GitHub secret, and there is no reason to
-  // hand out additional unguessable entry points to it.
-  "preview_urls": false,
+"workers_dev": true,
+    // Off explicitly. This worker holds a GitHub secret, and there is no reason to
+    // hand out additional unguessable entry points to it.
+    "preview_urls": false,
+    // Cache warming. Every entry here expires on its own timer, so the first
+    // visitor to ask for a common term is always the one who pays for it. This
+    // pays that cost instead, on a schedule, for the handful of searches that
+    // actually carry traffic. Free tier allows five triggers; this uses one.
+    //
+    // Every 30 minutes, which is deliberately frequent relative to the 10 minute
+    // soft TTL: a longer gap would let the entries this fills age out before the
+    // next run, which would make the whole exercise pointless.
+    "triggers": { "crons": ["*/30 * * * *"] },
   // Public search data only; no credentials, no per-user state.
   "observability": { "enabled": true }
 }

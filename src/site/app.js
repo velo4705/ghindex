@@ -23,6 +23,7 @@
 const $ = (id) => document.getElementById(id);
 
 import { startSky, retintSky } from "./sky.js";
+import { edgeEndpoint } from "./github-search.js";
 
 /**
  * Debounce before asking GitHub.
@@ -362,9 +363,33 @@ async function runSearch(opts = {}) {
   if (state.live.size > 200) state.live.clear();
 
   renderResults();
-  // Liveness is a follow-up, not part of the search: the list appears first and
-  // gains badges as answers arrive, so a slow site never delays results.
-  if (!state.error) verifyResults();
+  // Liveness is opt-in. Nothing is asked of the shared budget until the reader
+  // asks for it: see verifyResults for why that is a quota decision, not a
+  // cosmetic one.
+}
+
+/**
+ * Offer the liveness check rather than performing it unprompted.
+ *
+ * Renders into the results header, above the list. The wording names what it
+ * does and that it makes a request, because a control whose cost is invisible is
+ * a control the reader cannot meaningfully decline.
+ */
+function renderLiveToggle() {
+  const host = $("live-toggle");
+  if (!host) return;
+  const checked = state.rows.some((r) => r.url && state.live.has(r.url));
+  const nothing = !state.hasQuery || !state.rows.length;
+  if (nothing || !edgeEndpoint()) {
+    host.innerHTML = "";
+    return;
+  }
+  host.innerHTML = checked
+    ? `<span class="live-note">Checked ${esc(String(state.live.size))} site${
+        state.live.size === 1 ? "" : "s"
+      }</span>`
+    : `<button type="button" class="ghost live-check" id="live-check">` +
+      `Check which are still live</button>`;
 }
 
 /** Drop every result; used when the query box is cleared. */
@@ -380,10 +405,12 @@ function resetSearch() {
   state.pendingPage = 0;
   state.truncated = false;
   state.partial = null;
-  state.error = null;
-  state.hasQuery = false;
-  renderSortbar();
-}
+state.error = null;
+    state.hasQuery = false;
+    state.verifyToken++;
+    renderSortbar();
+    renderLiveToggle();
+  }
 
 // ---------------------------------------------------------------- tag picker
 
@@ -496,11 +523,24 @@ function livePillHtml(url) {
 /**
  * Liveness-check the results, then patch each row as its answer lands.
  *
- * Deliberately not awaited by the search: results appear immediately and are
- * annotated afterwards, so a slow or unreachable site never delays the list.
- * Rows that are confirmed gone are dimmed rather than removed, because a
- * transient failure should not hide a result, and a dead link is still a fact
- * the reader may want to see.
+ * Now opt-in rather than automatic, which is a quota decision.
+ *
+ * Every check is a Worker request, and on the Cloudflare free tier those are
+ * capped per day across all visitors. Checking automatically meant *every* page
+ * view spent a second request on decoration, doubling the requests for results
+ * that were already on screen and already readable. That is the wrong thing to
+ * spend a shared budget on: a reader who never looks at the badges paid for
+ * them anyway, and the day that budget ran out the whole API went down, search
+ * included.
+ *
+ * So the check is now offered rather than imposed. The button states the cost
+ * plainly instead of hiding it, and the results are complete without it — the
+ * badges are an addition, not the point of the page.
+ *
+ * Results appear first and are annotated afterwards either way, so a slow or
+ * unreachable site never delays the list. Rows that are confirmed gone are dimmed
+ * rather than removed: a transient failure should not hide a result, and a dead
+ * link is still a fact the reader may want to see.
  *
  * Checks go out in batches rather than one at a time. Up to 24 URLs become one
  * Worker request instead of 24, and each per-URL verdict is cached, so the next
@@ -508,7 +548,7 @@ function livePillHtml(url) {
  * reaching that site's host again.
  */
 async function verifyResults() {
-  const { verifyLivenessBatch, edgeEndpoint } = await import("./github-search.js");
+  const { verifyLivenessBatch } = await import("./github-search.js");
 
   /**
    * With no edge configured there is nothing to ask: a browser cannot make this
@@ -530,6 +570,9 @@ async function verifyResults() {
   // looking unchecked while the request is in flight.
   for (const u of pending) state.live.set(u, "checking");
   paintLiveRows();
+  // The button turns into a progress note the moment the checks are under way,
+  // so there is no way to ask twice and spend the budget twice.
+  renderLiveToggle();
 
   // The worker's batch endpoint caps a call at twelve URLs and six distinct
   // hosts, so chunks are six long: six URLs span at most six hosts, which is
@@ -547,6 +590,7 @@ async function verifyResults() {
     for (const u of chunk) state.live.set(u, found.get(u)?.verdict ?? "error");
     paintLiveRows();
   }
+  renderLiveToggle();
 }
 
 /**
@@ -741,6 +785,7 @@ function renderResults(statusText, keepPager = false) {
   }
   renderPage();
   paintLiveRows();
+  renderLiveToggle();
 }
 
 // ---------------------------------------------------------------- controls
@@ -965,6 +1010,12 @@ async function surpriseMe() {
 }
 
 $("surprise")?.addEventListener("click", surpriseMe);
+
+// Delegated, because renderLiveToggle rewrites this host on every search and a
+// direct listener would be thrown away with the first re-render.
+$("live-toggle")?.addEventListener("click", (e) => {
+  if (e.target.closest("#live-check")) verifyResults();
+});
 
 /**
  * Paging, delegated because the pager is re-rendered on every update.

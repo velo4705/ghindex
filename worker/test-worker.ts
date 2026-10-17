@@ -16,6 +16,8 @@ import {
   normalizeSort,
 } from "./src/query.ts";
 import { handleRequest, __clearMemo, sortClauseFor } from "./src/index.ts";
+import workerDefault, { warmCaches } from "./src/index.ts";
+import { warmKeys } from "./src/warm.ts";
 
 let fail = 0;
 const eq = (name: string, got: string, want: string) => {
@@ -388,6 +390,197 @@ stubGithub(() => new Response(JSON.stringify({ message: "Bad credentials" }), { 
   eq("no pointless wait hint", String(body.wait), "0");
   check("GitHub's own message is echoed", String(body.detail).includes("Bad credentials"), String(body.detail));
 }
+
+// ============================================================ single-flight
+
+/**
+ * The stampede case: a cold key with many identical requests in flight.
+ *
+ * Without coalescing this is one upstream call per request, so a single burst of
+ * simultaneous visitors spends the whole shared 30/minute budget on one search
+ * term and rate-limits everyone else on the site. The counter is deliberately
+ * not reset between the concurrent calls; the assertion is that N readers of the
+ * same key produce exactly one GitHub request.
+ */
+console.log("=== single-flight (search) ===");
+{
+  ghCalls = 0;
+  __clearMemo();
+  const { cache } = fakeCache();
+  const { ctx, drain } = fakeCtx();
+  // Holding the upstream open is what keeps these genuinely concurrent rather
+  // than accidentally serialised by the stub resolving instantly.
+  const gate: Array<() => void> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.github.com") {
+      ghCalls++;
+      await new Promise<void>((r) => gate.push(r));
+      return new Response(
+        JSON.stringify({
+          total_count: 1,
+          items: [{ id: 1, full_name: "a/b", html_url: "https://a.github.io/b/" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+
+  const readers = 12;
+  const pending = Array.from({ length: readers }, () =>
+    call("/api/search?q=portfolio", {}, cache, ctx),
+  );
+  await Bun.sleep(5); // let every reader reach the coalescing point
+  for (const release of gate) release();
+  const responses = await Promise.all(pending);
+  await drain();
+
+  eq("12 simultaneous cold requests cost one upstream call", String(ghCalls), "1");
+  check("every reader still got an answer", responses.length === readers);
+  const bodies = await Promise.all(responses.map((r) => r.json() as Promise<any>));
+  check("and every answer carries the same real results",
+    bodies.every((b) => Array.isArray(b.items) && b.items.length === 1));
+}
+
+// Different keys must not queue behind one another, or one popular term would
+// serialise every other visitor on the site.
+console.log("=== single-flight (independent keys) ===");
+{
+  ghCalls = 0;
+  __clearMemo();
+  const { cache } = fakeCache();
+  const { ctx, drain } = fakeCtx();
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.github.com") {
+      ghCalls++;
+      return new Response(JSON.stringify({ total_count: 0, items: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+
+  await Promise.all([
+    call("/api/search?q=alpha", {}, cache, ctx),
+    call("/api/search?q=beta", {}, cache, ctx),
+    call("/api/search?q=gamma", {}, cache, ctx),
+  ]);
+  await drain();
+  eq("three different terms each fetch their own", String(ghCalls), "3");
+}
+
+// A failed upstream must release the key. A rejected promise left in the map
+// would make that search term permanently dead until the isolate recycled.
+console.log("=== single-flight (failure releases the key) ===");
+{
+  ghCalls = 0;
+  __clearMemo();
+  const { cache } = fakeCache();
+  const { ctx, drain } = fakeCtx();
+  let attempt = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.github.com") {
+      ghCalls++;
+      attempt++;
+      return attempt === 1
+        ? new Response("boom", { status: 500 })
+        : new Response(JSON.stringify({ total_count: 1, items: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+
+  await call("/api/search?q=flaky", {}, cache, ctx);
+  await drain();
+  await call("/api/search?q=flaky", {}, cache, ctx);
+  await drain();
+  eq("a retry after failure is allowed through", String(ghCalls), "2");
+}
+
+globalThis.fetch = realFetch;
+
+// ============================================================== warming
+
+/**
+ * The scheduled pass has to do two things at once: leave the popular searches
+ * warm, and not spend so much of the shared budget that it starves the visitors
+ * it is warming. Both are asserted here.
+ */
+console.log("=== cron warming ===");
+eq("the warm list is bounded, so a trigger cannot outrun the budget",
+  String(warmKeys().length <= 20), "true");
+check("it covers the query this index is built around",
+  warmKeys().some((k) => k.q === "resume"), "resume must be warmed");
+check("updated is warmed, because it is the sort that goes stale first",
+  warmKeys().some((k) => k.sort === "updated"), "updated must be warmed");
+{
+  ghCalls = 0;
+  __clearMemo();
+  const { cache } = fakeCache();
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.github.com") {
+      ghCalls++;
+      return new Response(JSON.stringify({ total_count: 1, items: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+
+  const summary = await warmCaches({}, cache);
+  const targets = warmKeys().length;
+  eq("one upstream call per warm target", String(ghCalls), String(targets));
+  check("and it reports what it filled", /filled \d+\/\d+/.test(summary), summary);
+
+  // The trigger must hand the warming pass a usable cache, or it warms nothing
+  // while reporting success. Asserted through the real entry point because that
+  // wiring is exactly what silently breaks.
+  check("the scheduled entry point runs at all",
+    typeof workerDefault.scheduled === "function", "scheduled must exist");
+  const viaTrigger = await workerDefault.scheduled({} as any, {}, cache);
+  check("and it reports whether it managed to warm anything",
+    /filled \d+\/\d+/.test(viaTrigger), viaTrigger);
+  check("with a working cache it fills the targets it tried",
+    /filled [1-9]\d*\//.test(viaTrigger), viaTrigger);
+  check("a clean run reports no failures",
+    /filled \d+\/\d+, 0 failed/.test(viaTrigger), viaTrigger);
+
+  // The point of the exercise: after warming, a visitor must not pay for it.
+  ghCalls = 0;
+  const first = warmKeys()[0];
+  const res = await call(
+    `/api/search?q=${encodeURIComponent(first.q)}&page=${first.page}&sort=${first.sort}`,
+    {},
+    cache,
+    null,
+  );
+  // A warming pass that hits a broken upstream must say so. Reporting a fill for
+  // work that failed is how a warming schedule quietly stops working.
+  {
+    const broken: Cache = { match: async () => null, put: async () => {} } as any;
+    __clearMemo();
+    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof fetch;
+    const outcome = await workerDefault.scheduled({} as any, {}, broken);
+    const failedCount = Number((outcome.match(/, (\d+) failed/) ?? [])[1] ?? "-1");
+    check("a failing upstream is counted as a failure, not silently ignored",
+      failedCount > 0 && /filled 0\//.test(outcome), outcome);
+  }
+
+  check("a warmed search is then served from cache",
+    (res.headers.get("x-cache") === "HIT" || res.headers.get("x-cache") === "MEMO") &&
+    ghCalls === 0,
+    `x-cache=${res.headers.get("x-cache")} calls=${ghCalls}`);
+}
+
+globalThis.fetch = realFetch;
 
 // ============================================================== liveness
 

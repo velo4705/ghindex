@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
 <title>ghindex — A Live GitHub IO Indexer</title>
-<meta name="description" content="Search GitHub Pages sites live. Results come from GitHub as you type and are link-checked as they load." />
+<meta name="description" content="Search GitHub Pages sites live. Results come from GitHub as you type, and can be link-checked on demand." />
 <meta name="color-scheme" content="light dark" />
 <meta name="theme-color" content="#1c1f24" data-scheme="dark" media="(prefers-color-scheme: dark)" />
 <meta name="theme-color" content="#f4f2ee" data-scheme="light" media="(prefers-color-scheme: light)" />
@@ -710,6 +710,28 @@
   }
   .sortbar:not(:has(.sortbtn)) { display: none; }
 
+  /*
+    The opt-in liveness control. Sized and coloured like the quiet chrome above
+    it rather than like a call to action, because it is an optional extra and
+    should not look like the thing you are supposed to press.
+  */
+  .livetoggle { display: flex; justify-content: center; margin-bottom: 1.1rem; }
+  .livetoggle:empty { display: none; }
+  .live-check {
+    font: inherit;
+    font-size: .82rem;
+    color: var(--fg-muted);
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: .3rem .85rem;
+    cursor: pointer;
+    transition: color .15s ease, border-color .15s ease;
+  }
+  .live-check:hover { color: var(--fg); border-color: var(--fg-subtle); }
+  .live-check:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .live-note { font-size: .82rem; color: var(--fg-muted); }
+
   .sortbtn {
     padding: .28rem .7rem;
     font: inherit;
@@ -972,9 +994,9 @@
 <main>
   <noscript>
     <p class="note warn">
-      This search needs JavaScript: results are requested from GitHub as you type
-      and link-checked as they arrive, which a static page cannot do. You can
-      still search GitHub directly:
+      This search needs JavaScript: results are requested from GitHub as you
+      type, which a static page cannot do. You can still search GitHub
+      directly:
       <a href="https://github.com/search?q=topic%3Agithub-pages&amp;type=repositories">github.com/search</a>
     </p>
   </noscript>
@@ -1085,12 +1107,18 @@
 
     <p class="helpline">
       ghindex is an independent project and is not affiliated with GitHub. Results
-      come straight from GitHub and are link-checked as they load.
+      come straight from GitHub, and can be link-checked on demand.
     </p>
   </div>
 
-  <div id="sortbar" class="sortbar" role="group" aria-label="Result order"></div>
-  <div id="results"></div>
+<div id="sortbar" class="sortbar" role="group" aria-label="Result order"></div>
+    <!--
+      Filled in by app.js. The liveness check lives here and is opt-in: it costs
+      a Worker request per batch, against a daily budget shared by every visitor,
+      so it is offered rather than performed. See renderLiveToggle.
+    -->
+    <div id="live-toggle" class="livetoggle"></div>
+    <div id="results"></div>
 </main>
 
 <script type="module" src="./app.js"></script>

@@ -51,6 +51,7 @@ import {
   PROBE_MAX_HOSTS,
   searchCacheKey,
 } from "./query.ts";
+import { warmKeys } from "./warm.ts";
 
 /** How long the edge holds a response before it must be refetched. */
 const HARD_TTL_SECONDS = 3600;
@@ -122,6 +123,53 @@ function memoSet(key: string, value: { text: string; headers: Record<string, str
   memo.set(key, { ...value, at: Date.now() });
 }
 
+/**
+ * Upstream fetches currently in flight, keyed by cache key.
+ *
+ * The caches above all help only once something has been stored. On a cold key
+ * they help nobody, and every request that misses goes straight to GitHub. That
+ * is fine at one request and ruinous at twenty arriving together: a popular term
+ * on a cold worker fires one upstream call per request, so a single burst of
+ * simultaneous visitors can spend the entire 30/minute shared budget on one
+ * search and rate-limit every other visitor on the site.
+ *
+ * The fix is to let the first request do the work and have the rest wait on its
+ * result. A dozen simultaneous searches for the same term become exactly one
+ * upstream call and eleven fast local responses.
+ *
+ * Deliberately not a global lock. Requests for *different* keys never wait on
+ * each other, because serialising those would turn one popular term into a
+ * queue that every other visitor has to stand in.
+ *
+ * Scope is one isolate, which is the honest limit: `caches.default` is also
+ * per-datacentre, and Cloudflare free tier has no shared-memory primitive to
+ * coordinate across them. This closes the burst within a datacentre, which is
+ * where a single popular term's traffic actually lands.
+ */
+const inflight = new Map<string, Promise<Response | null>>();
+
+/** Exposed for tests, which must not see another test's pending fetch. */
+export function resetInflight() {
+  inflight.clear();
+}
+
+/**
+ * Run an upstream fetch at most once per key per isolate at a time.
+ *
+ * The entry is removed in a `finally`, so a rejection removes it too: leaving a
+ * failed promise cached would make this a permanent outage for that key until
+ * the isolate died.
+ */
+function singleFlight<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const existing = inflight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const started = run().finally(() => {
+    if (inflight.get(key) === started) inflight.delete(key);
+  });
+  inflight.set(key, started as Promise<Response | null>);
+  return started;
+}
+
 /** Exposed for tests so one test's entries cannot mask another's. */
 /**
  * The `sort` qualifier to append to a GitHub search URL.
@@ -147,6 +195,7 @@ export function sortClauseFor(sort: "best" | "stars" | "updated"): string {
 
 export function __clearMemo() {
   memo.clear();
+  inflight.clear();
 }
 
 const JSON_HEADERS = {
@@ -268,7 +317,10 @@ async function handleSearch(
 
     if (!fresh && ctx) {
       // Stale-while-revalidate: hand back what we have, refresh behind it.
-      const refresh = refreshSearch(key, q, url, env).then(
+      // Coalesced for the same reason as the cold path: a popular entry that has
+      // just aged past the soft window would otherwise send one background refresh
+      // per reader, which is the stampede wearing a different hat.
+      const refresh = singleFlight(key, () => refreshSearch(key, q, url, env)).then(
         (res) => res && cache && cache.put(new Request(key), res.clone()),
       );
       ctx.waitUntil(refresh);
@@ -276,7 +328,10 @@ async function handleSearch(
     return new Response(JSON.stringify({ ...body, _cache: meta }), { headers });
   }
 
-  const upstream = await refreshSearch(key, q, url, env);
+  // Everything below this point spends an upstream request, so it is the one
+  // place worth coalescing. Requests arriving while this one is in flight wait
+  // for its answer instead of issuing their own.
+  const upstream = await singleFlight(key, () => refreshSearch(key, q, url, env));
   if (!upstream) {
     return new Response(
       JSON.stringify({ error: "github unreachable", total_count: 0, items: [] }),
@@ -287,18 +342,27 @@ async function handleSearch(
   /**
    * A rate-limited or failed upstream must not be cached, or the worker would
    * replay its own failure to every visitor until the TTL expired.
+   *
+   * The body is materialised as text before it is handed back, because coalescing
+   * means every waiting reader receives the *same* Response object and a body
+   * stream can only be consumed once. The first reader would drain it and the
+   * other eleven would get a disturbed-body error instead of their results.
    */
-  if (upstream.status === 200) {
-    const text = await upstream.clone().text();
-    const headers = Object.fromEntries(upstream.headers.entries());
-    memoSet(key, { text, headers });
+  const bodyText = await upstream.clone().text();
+  const status = upstream.status;
+  const upstreamHeaders = upstream.headers;
+
+  if (status === 200) {
+    const headers = Object.fromEntries(upstreamHeaders.entries());
+    memoSet(key, { text: bodyText, headers });
     if (cache) {
       ctx?.waitUntil(
-        cache.put(new Request(key), new Response(text, { headers: upstream.headers })),
+        cache.put(new Request(key), new Response(bodyText, { headers: upstreamHeaders })),
       );
     }
   }
-  return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
+  // A fresh Response per reader: one shared stream, or one shared disturbed body.
+  return new Response(bodyText, { status, headers: upstreamHeaders });
 }
 
 /**
@@ -521,7 +585,7 @@ async function handleLiveBatch(
         results[target] = await cached.json();
         continue;
       }
-      const result = await probe(target);
+const result = await singleFlight(key, () => probe(target));
       results[target] = result;
       const stored = new Response(JSON.stringify(result), {
         headers: { ...JSON_HEADERS, "cache-control": `public, max-age=${livenessTtl(result.verdict)}` },
@@ -694,11 +758,88 @@ export async function handleRequest(
   }
 }
 
+/**
+ * Pre-fill the cache for the searches people are most likely to make.
+ *
+ * Every cache in this worker expires on its own timer, independently, so there is
+ * no moment when the cache is wholesale cold. What that means in practice is
+ * that the *first* visitor to ask for a given term pays for it — and if several
+ * of them ask at once, single-flight makes that one shared upstream call. Which
+ * is already good. What it does not do is stop the first request being slower
+ * than the hundredth.
+ *
+ * This trigger exists so the common terms are answered from cache before anyone
+ * asks. It is deliberately narrow (see WARM_QUERIES): each cold entry here is a
+ * real request out of the same 30/minute GitHub bucket that real visitors share,
+ * so a warming pass that tried to be thorough would be competing with the site
+ * it is warming.
+ *
+ * Requests go out one at a time and each one's response is what fills the cache,
+ * because that is the same code path a visitor takes. Warming by writing to the
+ * cache directly would be faster and would silently drift from the fetch path,
+ * which is exactly the bug single-flight exists to prevent.
+ */
+export async function warmCaches(
+  env: Record<string, unknown>,
+  cache: Cache | null,
+): Promise<string> {
+  if (!cache) return "skipped: no cache available";
+  const targets = warmKeys();
+  let filled = 0;
+  let errors = 0;
+
+  for (const { q, page, sort } of targets) {
+    // Serial on purpose. These are not latency-sensitive, and firing them in
+    // parallel would spend the same shared budget in a tighter burst than a
+    // single popular visitor could.
+    try {
+      const url = new URL("https://edge.test/api/search");
+      url.searchParams.set("q", q);
+      url.searchParams.set("page", String(page));
+      url.searchParams.set("sort", sort);
+      const res = await handleRequest(
+        new Request(url.toString()),
+        env,
+        cache,
+        null,
+      );
+      if (res.ok) filled++;
+      else errors++;
+    } catch {
+      errors++;
+    }
+  }
+  return `filled ${filled}/${targets.length}, ${errors} failed`;
+}
+
 export default {
   fetch(request: Request, env: Record<string, unknown>, ctx: ExecutionContext) {
     // caches.default is the per-datacentre cache; null just disables caching,
     // which is the correct degraded behaviour rather than an error.
     const cache = typeof caches !== "undefined" ? caches.default : null;
     return handleRequest(request, env, cache ?? null, ctx);
+  },
+
+  /**
+   * Cron entry point. Wired in wrangler.jsonc as `crons`.
+   *
+   * The cache is resolved from the global at call time rather than at module
+   * scope, and the lookup is overridable, so the trigger can be exercised
+   * against a stub. Warming is the one path with no user waiting on it, which
+   * makes it the easiest thing in the worker to break and the hardest to notice:
+   * it would simply stop warming and report nothing.
+   */
+  async scheduled(
+    _event: ScheduledController,
+    env: Record<string, unknown>,
+    override?: Cache | null,
+  ): Promise<string> {
+    const cache =
+      override !== undefined
+        ? override
+        : typeof caches !== "undefined"
+          ? caches.default
+          : null;
+    return warmCaches(env, cache ?? null);
   },
 };

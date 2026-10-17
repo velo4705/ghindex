@@ -411,6 +411,28 @@ check("and if the popup is blocked, it still opens the site",
   /if \(tab\) \{[\s\S]{0,120}?tab\.location\.replace\(target\)/.test(appCode) &&
   /\} else \{[\s\S]{0,300}?window\.location\.href = target/.test(appCode),
   "same-tab fallback");
+// Liveness is opt-in for a quota reason, not a cosmetic one: every batch is a
+// Worker request against a daily budget shared by every visitor, so it must not
+// fire on every page view unasked.
+check("search results do not spend a request on liveness unasked",
+  !/if \(!state\.error\) verifyResults\(\)/.test(appCode),
+  "no automatic verifyResults on search");
+check("the check is offered to the reader instead",
+  /renderLiveToggle/.test(appCode) && /live-check/.test(appCode),
+  "opt-in control must exist");
+check("and it says what it does before it costs anything",
+  /Check which are still live/.test(appCode), "control states its effect");
+check("the host element exists in the page",
+  /id="live-toggle"/.test(html), "live-toggle host");
+check("the control is not styled as the primary action",
+  /\.live-check \{[^}]*color: var\(--fg-muted\);[^}]*background: none;[^}]*\}/.test(html),
+  "quiet, not a call to action");
+// An already-checked set must not offer to be checked again: pressing twice would
+// spend the shared budget twice for the same answer.
+check("once checked, the control reports the count rather than re-offering",
+  /state\.live\.size === 1 \? "" : "s"/.test(appCode) &&
+  /Checked \$\{esc\(String\(state\.live\.size\)\)\}/.test(appCode),
+  "no repeat spend");
 check("the navigation target is only ever a safeUrl result",
   /const candidates =[\s\S]{0,240}?safeUrl\(/.test(appCode) &&
   /window\.location\.href = target/.test(appCode),

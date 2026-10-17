@@ -1034,8 +1034,38 @@ check(
   `results ${wide.resultsLeft}px vs tags ${wide.tagsLeft}px`,
 );
 
-const pills = await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`);
-  check("liveness badges are rendered", pills > 0, `${pills} badges`);
+// Liveness is opt-in: the control is there to be pressed, and nothing is verified
+// until it is. Asserting on badges without pressing it would test the old
+// automatic behaviour and quietly pass while the feature was broken.
+const optIn = JSON.parse(String(await evalJs(`JSON.stringify((() => {
+  const btn = document.querySelector('#live-check');
+  return {
+    present: !!btn,
+    text: btn ? btn.textContent.trim() : '',
+    hostExists: !!document.querySelector('#live-toggle'),
+    badgesBefore: document.querySelectorAll('#results .pill[class*="live-"]').length,
+  };
+})())`)));
+check("liveness is offered, not automatic", optIn.present && optIn.hostExists,
+  JSON.stringify(optIn));
+check("and nothing is checked until the reader asks",
+  optIn.badgesBefore === 0, `${optIn.badgesBefore} badges before pressing`);
+check("the control states what it does", /still live/i.test(optIn.text), optIn.text);
+
+// Press it and wait for the verdicts to land.
+await evalJs(`document.querySelector('#live-check')?.click()`);
+let pills = 0;
+for (let i = 0; i < 24; i++) {
+  await Bun.sleep(2000);
+  pills = Number(
+    await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`),
+  );
+  if (pills > 0) break;
+}
+check("pressing it renders the liveness badges", pills > 0, `${pills} badges`);
+// The button must not offer a second spend for an answer already paid for.
+check("and it does not offer to spend again",
+  !(await evalJs(`!!document.querySelector('#live-check')`)), "button still present");
 
 // The badge belongs last. Its labels range from "live" to "blocks bots", and when
 // one led the row every title started at a different x - 56px of raggedness

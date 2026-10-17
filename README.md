@@ -18,7 +18,7 @@ The Search Engine has **three orderings** - "Best match" (default), "Most stars"
 
 They answer three different questions, and none of them replaces the others. **Best match** finds the repository you half-remember. **Most stars** finds the well-known one. **Recently updated** finds what someone deployed minutes ago - GitHub returns its live tail here, so it is the one to use when you cannot yet name what you are looking for. Its trade is depth rather than breadth: the newest repositories are usually brand new and unranked, so roughly a fifth of that page has an IO page, against about a third for the others.
 
-Each index has a **status** whether the repository has a live IO page, or is a dead link. Each repository displays its star count, and those repositories only appear if they have a **IO page**, regardless of whether it is **live**, or at **404** (is struck-out anyway due to dead links). A third one, **blocks bots**, means the site refused the automated check - it will very likely still open fine in a browser, so don't take it for a dead link.
+Each repository displays its star count, and only those with an **IO page** appear at all. On request - press **Check which are still live** - each row is also marked with a **status**: a live page, or a dead link (struck out anyway, because a dead link is still a fact worth showing). A third one, **blocks bots**, means the site refused the automated check - it will very likely still open fine in a browser, so don't take it for a dead link. The check is opt-in because it costs a request against a budget everyone shares; the results are complete without it.
 
 The page itself is hosted on **GitHub Pages**, but a browser can't hold a GitHub token, so the searching is done by a small **Cloudflare Worker** that keeps one for us.
 
@@ -42,7 +42,13 @@ However, this doesn't solve the ~7M Page showcase on GitHub, so we limited the m
 
 A browser can't hold a GitHub token, because anything in a static page is public. So the search goes through a small Cloudflare Worker that keeps one read-only token on the server side, which gets us 30 searches a minute instead of the anonymous 10. The catch is that the token belongs to the worker, so everyone shares that one budget rather than getting 30 each.
 
-Typing is debounced and results are cached at the edge, so searching the same thing twice costs nothing, but a burst of new terms from a lot of people at once can still hit the ceiling. When it does, the page says so instead of showing an empty result list.
+Typing is debounced and results are cached at the edge, so searching the same thing twice costs nothing. Three things keep the shared budget from being spent by accident:
+
+- **Simultaneous identical searches cost one GitHub call.** A cold cache plus a burst of people searching the same word would otherwise send one request per visitor; they now wait on a single shared one. Different words never wait on each other, so a popular term can't queue up the rest of the site.
+- **Link-checking is opt-in.** It runs only when someone presses the button, because a reader who never looks at the badges shouldn't pay for them.
+- **The common searches are warmed on a schedule.** A cron trigger pre-fills the cache for the terms people actually arrive on, so the first visitor of the hour doesn't pay for everyone else's copy.
+
+When the ceiling is genuinely reached, the page says so instead of showing an empty result list.
 
 ---
 
