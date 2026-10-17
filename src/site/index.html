@@ -1044,9 +1044,10 @@
           and a browser with no idea is the harder case to help. Asking that
           visitor to guess a tag is the exact thing they cannot do.
 
-          It navigates in the same tab, like the button of the same idea this is
-          borrowed from. Opening a new tab would strand them on an empty search
-          result they never asked for, behind the thing they did ask for.
+          It opens a new tab, so the search page is still there when the visitor
+          comes back and wants to try again. The tab is opened empty and filled
+          in once a live site has been found; see the handler in app.js for why
+          that has to happen before the search rather than after it.
         -->
         <button type="button" class="surprise" id="surprise">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

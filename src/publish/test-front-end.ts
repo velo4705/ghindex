@@ -369,6 +369,25 @@ check("every candidate URL passes through safeUrl",
   /\.map\(\(r\) => safeUrl\(r\.url\)\)/.test(appCode) ||
   /safeUrl\(r\.url\)/.test(appCode),
   "candidate mapping");
+// The new-tab behaviour has one non-obvious requirement: the window must be
+// opened synchronously, before the search. A popup blocker honours a request made
+// during the click and refuses one made after an await, so a naive
+// "search, then window.open" silently does nothing at all. Source-level because a
+// real popup would leave the test page behind.
+check("the tab is opened before any await, or a popup blocker eats it",
+  /const tab = window\.open\("", "_blank"\)/.test(appCode) &&
+  appCode.indexOf('window.open("", "_blank")') < appCode.indexOf("const res = await searchGitHub"),
+  "window.open must precede the search");
+check("the opened tab is given the address later, not at open time",
+  /tab\.location\.replace\(target\)/.test(appCode), "tab.location.replace");
+check("the opener is severed so the site cannot reach back into this page",
+  /tab\.opener = null/.test(appCode));
+check("a tab that is never used gets closed again",
+  /tab\.close\(\)/.test(appCode), "no stray blank tabs");
+check("and if the popup is blocked, it still opens the site",
+  /if \(tab\) \{[\s\S]{0,120}?tab\.location\.replace\(target\)/.test(appCode) &&
+  /\} else \{[\s\S]{0,300}?window\.location\.href = target/.test(appCode),
+  "same-tab fallback");
 check("the navigation target is only ever a safeUrl result",
   /const candidates =[\s\S]{0,240}?safeUrl\(/.test(appCode) &&
   /window\.location\.href = target/.test(appCode),

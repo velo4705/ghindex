@@ -783,13 +783,31 @@ $("q").addEventListener("input", () => {
  * What it costs: one search plus one batched liveness check, both against the
  * shared rate limit. It is one request per click, not a walk of the corpus.
  *
- * Navigating in the same tab is deliberate. Opening a new tab would leave the
- * visitor on a search result they never asked for, behind the thing they did.
+ * Why the tab is opened before the answer is known
+ * ------------------------------------------------
+ * It opens in a new tab, which means a blank one, because a popup blocker only
+ * honours a request made *during* the click. By the time this has searched and
+ * probed, the browser has decided no gesture is in progress and will silently
+ * refuse the window. So the tab is opened empty and synchronously, and its
+ * address is set a moment later.
+ *
+ * That trades a tab that sits empty for a second for a control that works at
+ * all. The window is closed again if the search finds nothing, so the only way
+ * to end up with a stray blank tab is to leave during the search.
  */
 async function surpriseMe() {
   const btn = $("surprise");
   const label = $("surprise-label");
   if (!btn || btn.disabled) return;
+
+  // Synchronous, before any await. This is the whole reason the tab appears at
+  // all; moving this line below the search is what makes it silently blocked.
+  const tab = window.open("", "_blank");
+  // No opener: the opened site gets no handle on this page, and its back button
+  // does not walk through here. Set on the opener side because that is the only
+  // way to do it for a window whose address we assign later.
+  if (tab) tab.opener = null;
+
   // Superseded by a second click, and by anything the visitor types: both
   // replace the intent, so the first request should stop costing anything.
   state.inflight?.abort();
@@ -798,6 +816,15 @@ async function surpriseMe() {
   btn.disabled = true;
   const original = label.textContent;
   label.textContent = "Finding one…";
+
+  // A tab the visitor did not ask to keep, if this attempt does not finish.
+  // Called on the paths that bail out; the success path hands over ownership.
+  const discard = () => {
+    state.inflight = null;
+    btn.disabled = false;
+    label.textContent = original;
+    if (tab && !tab.closed) tab.close();
+  };
 
   try {
     const { searchGitHub, verifyLivenessBatch } = await import("./github-search.js");
@@ -811,8 +838,8 @@ async function surpriseMe() {
     // Candidates are every Pages site on the page, not one of them: probing a
     // single random row means a dead link a fraction of the time, and the whole
     // point is that the visitor is sent somewhere that works. `safeUrl` is the
-    // same guard every result row goes through, so nothing reaches `location`
-    // that would not already be rendered as a link.
+    // same guard every result row goes through, so nothing is opened that would
+    // not already be rendered as a link.
     const candidates = (res?.results ?? [])
       .map((r) => safeUrl(r.url))
       .filter(Boolean)
@@ -829,12 +856,23 @@ async function surpriseMe() {
     state.inflight = null;
     btn.disabled = false;
     label.textContent = original;
-    window.location.href = target;
+    if (tab) {
+      tab.location.replace(target);
+    } else {
+      // Blocked, or opened and already closed. Same-tab is a worse experience
+      // but a working one; losing the page would leave nothing to go back to.
+      window.location.href = target;
+    }
   } catch (err) {
-    if (err && err.name === "AbortError") return;
-    state.inflight = null;
-    btn.disabled = false;
-    label.textContent = original;
+    if (err && err.name === "AbortError") {
+      // Superseded by a real search the visitor typed, so the label and the
+      // button belong to that flow now and must not be stomped back.
+      state.inflight = null;
+      btn.disabled = false;
+      if (tab && !tab.closed) tab.close();
+      return;
+    }
+    discard();
     // Said in the button rather than as a page-level error: nothing failed, the
     // visitor simply gets no surprise, and replacing the results area with an
     // error for a control they pressed once would be far too loud.

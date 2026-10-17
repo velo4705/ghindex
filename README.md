@@ -10,7 +10,7 @@
 
 ## How it works
 
-Like a regular search engine, **Search anything you wanted**, just to look for some unique IO pages made by many open-source contributors. Tags are helpful if you can't think of searching something.
+Like a regular search engine, **Search anything you wanted**, just to look for some unique IO pages made by many open-source contributors. Tags are helpful if you can't think of searching something. You can also find and enter a random IO page by clicking the "**Surprise me**" button, which works just as if you are feeling lucky.
 
 This uses a **Live Index** of GitHub IO Pages loaded from keywords or tags. Perhaps, you might be able to explore some niche IO pages that you are unfamiliar with.
 
