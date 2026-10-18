@@ -685,8 +685,15 @@ function renderPager() {
   if (!host) return;
 
   if (state.pageCount <= 1) {
-    host.innerHTML = state.truncated && state.total > 1000
-      ? `<p class="note">GitHub returns at most 1,000 results per query, so this is all of them. Narrow the search to see different results.</p>`
+    // The honest number, not GitHub's ceiling. There used to be a single page cap
+    // and the pager could not offer more, so "at most 1,000" was true. Now the
+    // pager stops at ten pages of forty, so claiming to be showing everything would
+    // be false in a way that looks like a bug rather than a choice: the reader
+    // would read a total of 200,000 and see forty rows and no explanation.
+    host.innerHTML = state.truncated && state.total > state.pageCount * RESULTS_PER_PAGE
+      ? `<p class="note">Showing the first ${
+          state.pageCount * RESULTS_PER_PAGE
+        } of ${state.total.toLocaleString()} matches. Narrow the search to see different results.</p>`
       : "";
     return;
   }
@@ -735,12 +742,18 @@ function summaryHtml() {
         : `keywords: ${state.picked.join(" and ")}`,
     );
   }
-  if (state.total > n) {
-    bits.push(
-      `${state.total.toLocaleString()} repos match` +
-        (state.truncated ? ", of which only the first 1,000 are reachable" : ""),
-    );
-  }
+if (state.total > n) {
+      // The reachable figure is this page count times the page size, not GitHub's
+      // 1,000 ceiling. Those were the same number when the pager ran to twenty-five
+      // pages; now they differ, and quoting the ceiling here would tell the reader
+      // they could go further when the pager will not let them.
+      bits.push(
+        `${state.total.toLocaleString()} repos match` +
+          (state.truncated
+            ? `, of which only the first ${(state.pageCount * RESULTS_PER_PAGE).toLocaleString()} are reachable`
+            : ""),
+      );
+    }
   if (state.partial) bits.push(state.partial);
   const checked = [...state.live.values()].filter((v) => v !== "checking").length;
   bits.push(

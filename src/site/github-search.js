@@ -37,34 +37,42 @@
 const RESULT_CAP = 1000;
 
 /**
- * Results per API call.
- *
- * 100 is the maximum the search API allows and would reach the same 1,000
- * results in 10 requests instead of 25. It is not used, because the number of
- * pages and the page size are not independent: GitHub serves page N only while
- * its first result falls inside the first 1,000, i.e. (page - 1) * per_page is
- * under 1,000. At 100 that caps the pager at 10 pages; at 40 it reaches 25.
- *
- * Forty-one is the largest page size that still allows a 25th page, but it would
- * leave that last page holding 16 results rather than 40, so 40 is used and every
- * page is the same size.
- */
+* Results per API call.
+   *
+   * 100 is the maximum the search API allows and would reach the same 1,000
+   * results in 10 requests instead of 25. It is not used, because the number of
+   * pages and the page size are not independent: GitHub serves page N only while
+   * its first result falls inside the first 1,000, i.e. (page - 1) * per_page is
+   * under 1,000. At 100 that caps the pager at 10 pages; at 40 it reaches 25.
+   *
+   * Forty is the size this site settled on because a hundred rows on a phone is a
+   * long scroll, and because at 40 the ten-page pager still leaves room for every
+   * page to be exactly the same size.
+   */
 const PER_PAGE = 40;
 
-/**
- * Pages reachable per search. Not a free choice: it is the largest N for which
- * (N - 1) * PER_PAGE still sits under GitHub's 1,000-result ceiling, so this and
- * PER_PAGE are two views of the same limit. Twenty-five pages of forty still
- * reach exactly 1,000 results. Page 26 would begin at result 1,000, and GitHub
- * answers that with HTTP 422, "Only the first 1000 search results are
- * available".
- *
- * Twenty-five rather than ten because a pager the reader can stop partway through
- * is worth more than a longer one they cannot, and 40 results a page means less
- * scrolling to reach the same place. The cost is real: reaching the end costs 25
- * requests instead of 10, against a budget shared by every visitor.
- */
-const MAX_PAGES = 25;
+  /**
+   * Pages reachable per search.
+   *
+   * Ten, not twenty-five, and the reason is legibility rather than mathematics.
+   * Forty results across ten pages still reaches 400 results, which is most of
+   * what anyone actually pages through, and a pager of ten numbered buttons is one
+   * line on a phone and one row on a laptop. Twenty-five wrapped onto three rows at
+   * narrow widths and put the control the reader wanted furthest from their thumb.
+   *
+   * What is given up is depth: 400 results instead of 1,000. For a corpus of
+   * millions that is a small loss, and it is not a loss the reader can feel without
+   * scrolling to a page they were never going to reach.
+   *
+   * It also costs less to get there — ten requests to the shared budget rather
+   * than twenty-five — which is a real saving on the rate limit everyone shares.
+   *
+   * The hard ceiling is still GitHub's: page N is served only while its first
+   * result falls inside the first 1,000, so (N - 1) * PER_PAGE must stay under
+   * 1,000. At forty a page, twenty-five pages would be the mathematical maximum.
+   * Ten is a choice made inside that limit, not the limit itself.
+   */
+  const MAX_PAGES = 10;
 
 const API = "https://api.github.com/search/repositories";
 

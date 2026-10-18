@@ -324,19 +324,24 @@ direct("best").includes("page=2") && direct("stars").includes("page=2"));
 // while (N - 1) * per_page is under its 1,000-result ceiling, so one determines
 // the other. These assert the pair is coherent, and that the two places that
 // must agree on the page size actually do.
-check("the pager reaches 25 pages", MAX_PAGES_FOR_TEST === 25, `${MAX_PAGES_FOR_TEST}`);
+check("the pager reaches 10 pages", MAX_PAGES_FOR_TEST === 10, `${MAX_PAGES_FOR_TEST}`);
 check("a page holds 40 results", PER_PAGE_FOR_TEST === 40, `${PER_PAGE_FOR_TEST}`);
-check("25 pages of 40 reaches exactly the 1,000-result ceiling",
-  MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST === 1000,
+// Ten pages of forty reaches 400 results, well inside GitHub's 1,000. That is the
+// point of the change: the pager was sized to the mathematical maximum of 25, and
+// every one of those extra buttons was clutter on a phone and a deeper claim on
+// the rate limit every visitor shares.
+check("ten pages of forty reaches 400 results",
+  MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST === 400,
   `${MAX_PAGES_FOR_TEST} x ${PER_PAGE_FOR_TEST}`);
+// The invariant is not the number 10 but the relationship: the last page offered
+// must sit inside GitHub's ceiling, or the pager ends by serving a page that fails
+// with HTTP 422.
 check("the last page is inside the ceiling GitHub will serve",
   (MAX_PAGES_FOR_TEST - 1) * PER_PAGE_FOR_TEST < 1000,
   `page ${MAX_PAGES_FOR_TEST} starts at ${(MAX_PAGES_FOR_TEST - 1) * PER_PAGE_FOR_TEST}`);
-// The next page must be out of reach, or 25 was not the maximum and the reader
-// is being offered a page that will fail with HTTP 422.
-check("and page 26 would be rejected, so 25 really is the ceiling",
-  MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST >= 1000,
-  `page ${MAX_PAGES_FOR_TEST + 1} starts at ${MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST}`);
+check("and the pager stays a length a reader can take in at a glance",
+  MAX_PAGES_FOR_TEST <= 12,
+  `${MAX_PAGES_FOR_TEST} buttons`);
 // The summary line offsets by this number to label where you are. It is declared
 // separately in app.js because that module loads the search backend lazily; the
 // two drifting apart would make every "results 1-40" range a lie.

@@ -126,10 +126,11 @@ console.log("=== one page costs exactly one call ===");
   check("and it is page 3 that was requested",
     calls.every((c) => c.url.includes("page=3")),
     calls.map((c) => c.url).join(", "));
-  // 40 is what the 25-page pager requires: GitHub serves page N only while
-  // (N - 1) * per_page is under its 1,000-result ceiling.
-  check("per_page is 40, which is what 25 pages requires",
-    calls.every((c) => c.url.includes("per_page=40")));
+// 40 is what the pager uses: GitHub serves page N only while (N - 1) * per_page
+    // is under its 1,000-result ceiling, so the page size and the page count are
+    // two views of one limit.
+    check("per_page is 40, the size the pager uses",
+      calls.every((c) => c.url.includes("per_page=40")));
   check("sorted by stars, descending",
     r.results.every((x, i, a) => i === 0 || a[i - 1].stars >= x.stars));
   check("has_pages=false rows are dropped",

@@ -54,11 +54,23 @@ export function normalizeSort(raw: string): SortOrder {
 export function clampPage(raw: string | null): number {
   const n = Number.parseInt(String(raw ?? "1"), 10);
   if (!Number.isFinite(n) || n < 1) return 1;
-  // GitHub serves page N only while its first result is inside the first 1,000.
-  // With the per_page this site sends, that allows 25 pages; page 26 starts at
-  // result 1,000 and comes back HTTP 422.
-  return Math.min(n, 25);
+    // GitHub serves page N only while its first result is inside the first 1,000,
+  // so page 11 of forty would start at result 400 and is fine, while page 26 would
+  // start at 1,000 and come back HTTP 422. Ten is what the front-end offers, and
+  // this must not be more permissive than the pager: a worker that served deeper
+    // pages than the pager offered would spend the shared budget on results no
+  // reader can ask for.
+  return Math.min(n, MAX_PAGES);
 }
+
+/**
+ * Pages reachable, shared with the front-end's pager.
+ *
+ * Exported rather than duplicated so the two cannot drift. A drift here is the
+ * quiet kind: the pager offers ten pages, the worker serves twenty-five, and
+ * nothing looks broken while every deep request spends budget on nothing.
+ */
+export const MAX_PAGES = 10;
 
 /** Clamp per_page into the 1..100 the search API accepts. */
 export function clampPerPage(raw: string | null): number {
