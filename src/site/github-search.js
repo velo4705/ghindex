@@ -458,7 +458,19 @@ export async function verifyLiveness(url, opts = {}) {
     });
     if (!res.ok) return null;
     const body = await res.json();
-    return typeof body.alive === "boolean" ? body : null;
+    if (typeof body.alive !== "boolean") return null;
+    // Return the worker's verdict rather than only the boolean. The two are not
+    // the same answer: a site that refuses an automated request and a site that is
+    // genuinely gone both have `alive: false`, but only one of them is a dead
+    // link, and the badge that says so is drawn from this. Reducing the response to
+    // a boolean here would have thrown that distinction away and labelled every
+    // bot-blocked site as dead.
+    return {
+      verdict: typeof body.verdict === "string" ? body.verdict : (body.alive ? "alive" : "gone"),
+      status: Number(body.status) || 0,
+      detail: typeof body.detail === "string" ? body.detail : null,
+      redirectsTo: typeof body.redirectsTo === "string" ? body.redirectsTo : null,
+    };
   } catch {
     // An unreachable worker is not evidence that a site is dead.
     return null;

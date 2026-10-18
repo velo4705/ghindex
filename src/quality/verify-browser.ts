@@ -1171,38 +1171,106 @@ check(
   `results ${wide.resultsLeft}px vs tags ${wide.tagsLeft}px`,
 );
 
-// Liveness is opt-in: the control is there to be pressed, and nothing is verified
-// until it is. Asserting on badges without pressing it would test the old
-// automatic behaviour and quietly pass while the feature was broken.
+// Liveness follows the reader's attention: nothing is verified until a row is
+// pointed at or focused. Asserting on badges without provoking one would test the
+// old automatic behaviour and quietly pass while the feature was broken.
 const optIn = JSON.parse(String(await evalJs(`JSON.stringify((() => {
-  const btn = document.querySelector('#live-check');
+  const rows = document.querySelectorAll('#results .row[data-live]');
   return {
-    present: !!btn,
-    text: btn ? btn.textContent.trim() : '',
+    buttonPresent: !!document.querySelector('#live-check'),
     hostExists: !!document.querySelector('#live-toggle'),
     badgesBefore: document.querySelectorAll('#results .pill[class*="live-"]').length,
+    unverifiedBefore: document.querySelectorAll('#results .row:not([data-verdict])').length,
+    rowCount: rows.length,
   };
 })())`)));
-check("liveness is offered, not automatic", optIn.present && optIn.hostExists,
+check("there is no button to press", !optIn.buttonPresent && optIn.hostExists,
   JSON.stringify(optIn));
-check("and nothing is checked until the reader asks",
-  optIn.badgesBefore === 0, `${optIn.badgesBefore} badges before pressing`);
-check("the control states what it does", /still live/i.test(optIn.text), optIn.text);
+check("and nothing is verified before the reader shows interest",
+  optIn.badgesBefore === 0, `${optIn.badgesBefore} badges before any intent`);
+// The affordance is what makes a hover control discoverable, so its absence on
+// unverified rows is the thing to catch: with it missing the row reads as plain text
+// and nothing suggests it can be checked.
+check("every row starts unverified, and says so visually",
+  optIn.unverifiedBefore === optIn.rowCount && optIn.rowCount > 0,
+  `${optIn.unverifiedBefore} of ${optIn.rowCount}`);
 
-// Press it and wait for the verdicts to land.
-await evalJs(`document.querySelector('#live-check')?.click()`);
+// Provoke exactly one row and wait for its verdict. Hovering the first row only is
+// the point: it is what proves the budget follows attention rather than the page.
+await evalJs(`(() => {
+  const row = document.querySelector('#results .row[data-live]');
+  if (!row) return;
+  row.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+})()`);
+
 let pills = 0;
+let verdicts = 0;
 for (let i = 0; i < 24; i++) {
   await Bun.sleep(2000);
   pills = Number(
     await evalJs(`document.querySelectorAll('#results .pill[class*="live-"]').length`),
   );
+  verdicts = Number(
+    await evalJs(`document.querySelectorAll('#results .row[data-verdict]').length`),
+  );
   if (pills > 0) break;
 }
-check("pressing it renders the liveness badges", pills > 0, `${pills} badges`);
-// The button must not offer a second spend for an answer already paid for.
-check("and it does not offer to spend again",
-  !(await evalJs(`!!document.querySelector('#live-check')`)), "button still present");
+check("pointing at a row verifies that row", pills > 0, `${pills} badges`);
+// Only the row being looked at may be spent on. One checked row out of many is the
+// whole economy of the change; if this ever equals the row count, something is
+// verifying the page after all.
+check("and only that row, not the whole page",
+  verdicts === 1 && optIn.rowCount > 1, `${verdicts} of ${optIn.rowCount} rows verified`);
+
+// Re-hovering must not spend again: the verdict is memoised per URL.
+await evalJs(`(() => {
+  const row = document.querySelector('#results .row[data-live]');
+  row?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+  row?.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+})()`);
+await Bun.sleep(2500);
+const afterRepeat = Number(
+  await evalJs(`document.querySelectorAll('#results .row[data-verdict]').length`),
+);
+check("pointing at it again does not verify anything else",
+  afterRepeat === verdicts, `${verdicts} -> ${afterRepeat}`);
+
+// Overlapping checks. Hovering a second row while the first is still in flight is
+// what a reader moving down a list does constantly, and it is how a per-row
+// generation counter used to strand rows on "checking..." forever while still
+// holding the request they had spent. Every hovered row must reach a verdict.
+const overlapStart = Number(
+  await evalJs(`document.querySelectorAll('#results .row[data-verdict]').length`),
+);
+// Deliberately no wait between these hovers: the requests are meant to overlap,
+// which is the whole point. `focusin` is dispatched rather than the pointer because
+// this suite drives the page through evalJs and never moves a real pointer.
+const overlapRows = Number(
+  await evalJs(`document.querySelectorAll('#results .row[data-live]').length`),
+);
+await evalJs(`(() => {
+  const rows = document.querySelectorAll('#results .row[data-live]');
+  for (let i = 0; i < Math.min(5, rows.length); i++) {
+    const link = rows[i].querySelector('a');
+    if (link) link.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+  }
+})()`);
+// Give the last one the slowest allowance, since nothing is being awaited per row.
+for (let i = 0; i < 40; i++) {
+  await Bun.sleep(1000);
+  const done = Number(
+    await evalJs(`document.querySelectorAll('#results .row[data-verdict]').length`),
+  );
+  if (done >= overlapStart + Math.min(5, overlapRows)) break;
+}
+const overlapSettled = JSON.parse(String(await evalJs(`JSON.stringify({
+  verified: document.querySelectorAll('#results .row[data-verdict]').length,
+  // Rows still spinning are the failure mode: they hold a spent request and a
+  // badge that will never resolve.
+  stranded: document.querySelectorAll('#results .pill.live-checking').length,
+})`)));
+check("overlapping checks all come back", overlapSettled.stranded === 0,
+  `${overlapSettled.stranded} rows still stuck on checking`);
 
 // The badge belongs last. Its labels range from "live" to "blocks bots", and when
 // one led the row every title started at a different x - 56px of raggedness

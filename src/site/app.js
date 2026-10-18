@@ -35,15 +35,12 @@ import { edgeEndpoint } from "./github-search.js";
 const DEBOUNCE_MS = 700;
 
 /**
- * How many results to liveness-check, and in what size batches.
+ * URLs per liveness batch.
  *
- * Each check is a Worker invocation that makes a real request to someone else's
- * site, so this is capped rather than exhaustive: it covers the top results on
- * screen, which are the ones anyone is likely to click.
+ * Only "Surprise me" batches now -- the results list checks one row at a time, on
+ * intent. The worker allows twelve URLs per call and six distinct hosts, so six is
+ * the length that satisfies both limits without grouping by host here.
  */
-const LIVE_CHECK_LIMIT = 24;
-
-/** URLs per batch. The worker allows twelve per call and six distinct hosts. */
 const LIVE_CHECK_CHUNK = 6;
 
 /**
@@ -363,33 +360,30 @@ async function runSearch(opts = {}) {
   if (state.live.size > 200) state.live.clear();
 
   renderResults();
-  // Liveness is opt-in. Nothing is asked of the shared budget until the reader
-  // asks for it: see verifyResults for why that is a quota decision, not a
-  // cosmetic one.
+  // Nothing is asked of the shared budget here. Verification follows the reader's
+  // attention instead of the search: see verifyRow for why that is a quota decision
+  // rather than a cosmetic one.
 }
 
 /**
- * Offer the liveness check rather than performing it unprompted.
+ * Say how much of the list has been verified, without offering to verify it.
  *
- * Renders into the results header, above the list. The wording names what it
- * does and that it makes a request, because a control whose cost is invisible is
- * a control the reader cannot meaningfully decline.
+ * The control is gone: there is nothing to press, because verification now follows
+ * the reader's attention. What is left is the honest accounting -- how many of the
+ * sites on screen have actually been asked about -- so that a row carrying a badge
+ * is never the only clue that requests are being spent.
  */
 function renderLiveToggle() {
   const host = $("live-toggle");
   if (!host) return;
-  const checked = state.rows.some((r) => r.url && state.live.has(r.url));
-  const nothing = !state.hasQuery || !state.rows.length;
-  if (nothing || !edgeEndpoint()) {
+  const checked = [...state.live.values()].filter((v) => v !== "checking").length;
+  if (!state.hasQuery || !state.rows.length || !checked || !edgeEndpoint()) {
     host.innerHTML = "";
     return;
   }
-  host.innerHTML = checked
-    ? `<span class="live-note">Checked ${esc(String(state.live.size))} site${
-        state.live.size === 1 ? "" : "s"
-      }</span>`
-    : `<button type="button" class="ghost live-check" id="live-check">` +
-      `Check which are still live</button>`;
+  host.innerHTML = `<span class="live-note">Verified ${esc(String(checked))} of the ${
+    esc(String(state.rows.length))
+  } shown &#8212; hover or focus a row to check it</span>`;
 }
 
 /** Drop every result; used when the query box is cleared. */
@@ -521,77 +515,62 @@ function livePillHtml(url) {
 }
 
 /**
- * Liveness-check the results, then patch each row as its answer lands.
+ * Verify one row, on intent.
  *
- * Now opt-in rather than automatic, which is a quota decision.
+ * Why intent rather than a button
+ * ------------------------------
+ * This used to be a control the reader pressed to check every row on the page.
+ * That framed liveness as an extra the site was withholding, when the check is in
+ * fact the only thing keeping the site inside its budget: verifying a full page
+ * costs several Worker requests, and doing that automatically on every view was
+ * measured at roughly 140,000 requests a day against a 100,000 ceiling -- so it
+ * could not be automatic, and a button was the wrong way to make it optional.
  *
- * Every check is a Worker request, and on the Cloudflare free tier those are
- * capped per day across all visitors. Checking automatically meant *every* page
- * view spent a second request on decoration, doubling the requests for results
- * that were already on screen and already readable. That is the wrong thing to
- * spend a shared budget on: a reader who never looks at the badges paid for
- * them anyway, and the day that budget ran out the whole API went down, search
- * included.
+ * So the request is spent where it earns its keep: on the row the reader is
+ * actually considering. Hovering or focusing a row is a claim of interest in that
+ * one site, and one site costs one request, answered from the edge for everyone
+ * after the first. A reader scanning the list spends almost nothing; a reader
+ * about to click spends what it takes to know whether the click will work.
  *
- * So the check is now offered rather than imposed. The button states the cost
- * plainly instead of hiding it, and the results are complete without it — the
- * badges are an addition, not the point of the page.
- *
- * Results appear first and are annotated afterwards either way, so a slow or
- * unreachable site never delays the list. Rows that are confirmed gone are dimmed
- * rather than removed: a transient failure should not hide a result, and a dead
- * link is still a fact the reader may want to see.
- *
- * Checks go out in batches rather than one at a time. Up to 24 URLs become one
- * Worker request instead of 24, and each per-URL verdict is cached, so the next
- * visitor asking about the same site is answered from the edge instead of
- * reaching that site's host again.
+ * Nothing is hidden. A row that comes back gone is dimmed and badged rather than
+ * removed, because a transient failure should not delete a result the reader may
+ * want, and because a bot-refusing site is not a dead site -- that distinction is
+ * the reason the worker's verdict is carried through instead of a boolean.
  */
-async function verifyResults() {
-  const { verifyLivenessBatch } = await import("./github-search.js");
+async function verifyRow(url) {
+  if (!url || !edgeEndpoint()) return;
+  // Already known, still in flight, or never askable. One request per URL per page
+  // of results: sweeping the pointer down the list cannot re-spend the budget,
+  // because the verdict is in the map before the request goes out.
+  if (state.live.has(url)) return;
 
-  /**
-   * With no edge configured there is nothing to ask: a browser cannot make this
-   * check at all, because a cross-origin HEAD returns an opaque response. Skip
-   * it entirely rather than stamping a status on every row, which would be
-   * noise: nothing was asked, so nothing can honestly be claimed.
-   */
-  if (!edgeEndpoint()) return;
-
-  const token = ++state.verifyToken;
-
-  const pending = state.rows
-    .map((r) => r.url)
-    .filter((u) => u && !state.live.has(u))
-    .slice(0, LIVE_CHECK_LIMIT);
-  if (!pending.length) return;
-
-  // Marking first means a row renders as "checking…" immediately instead of
-  // looking unchecked while the request is in flight.
-  for (const u of pending) state.live.set(u, "checking");
+  // No token is taken here. Abandoning a check because the reader moved on is what
+  // broke this the first time: it left rows stuck on "checking…" with an answer
+  // thrown away, and the row could never be re-checked because the URL was already
+  // in the map. A verdict about a site is true regardless of which page it came
+  // from, and it is cached at the edge for the next visitor anyway, so recording it
+  // late is strictly better than discarding it.
+  state.live.set(url, "checking");
   paintLiveRows();
-  // The button turns into a progress note the moment the checks are under way,
-  // so there is no way to ask twice and spend the budget twice.
-  renderLiveToggle();
 
-  // The worker's batch endpoint caps a call at twelve URLs and six distinct
-  // hosts, so chunks are six long: six URLs span at most six hosts, which is
-  // inside both limits without having to group by host here.
-  for (let i = 0; i < pending.length; i += LIVE_CHECK_CHUNK) {
-    const chunk = pending.slice(i, i + LIVE_CHECK_CHUNK);
-    let found;
-    try {
-      found = await verifyLivenessBatch(chunk);
-    } catch {
-      found = new Map();
-    }
-    // A newer search has taken over; stop annotating rows that are gone.
-    if (token !== state.verifyToken) return;
-    for (const u of chunk) state.live.set(u, found.get(u)?.verdict ?? "error");
-    paintLiveRows();
-  }
+  const { verifyLiveness } = await import("./github-search.js");
+  const found = await verifyLiveness(url);
+
+  // null means the edge could not be reached or refused. That is the absence of an
+  // answer, not the answer "dead", and LIVE_BADGES maps it to the unmarked state
+  // for exactly that reason.
+  //
+  // The verdict is recorded whether or not the reader is still looking at these
+  // results. Abandoning it on a stale token would leave the row pinned to
+  // "checking…" while the reader reads a different page -- and because the guard
+  // above keys on the URL being present in the map, that row could then never be
+  // checked again in this session. The cache is global knowledge about a site; it
+  // does not become less true because the reader moved.
+  state.live.set(url, found?.verdict ?? "error");
+  paintLiveRows();
+  // The accounting line counts verified rows, so it has to move with them.
   renderLiveToggle();
-}
+  }
 
 /**
  * Update just the rows whose verdict changed, instead of re-rendering the whole
@@ -605,6 +584,12 @@ function paintLiveRows() {
     if (!v) continue;
     const badge = LIVE_BADGES[v];
     row.classList.toggle("is-gone", v === "gone" || v === "unreachable");
+    // Record the verdict on the row itself. It is what clears the "not yet checked"
+    // affordance in the stylesheet, and it is set even for a verdict that carries no
+    // badge, because "asked, and the answer was nothing much" is still an answer and
+    // the row should stop inviting a second request.
+    if (v === "checking") row.removeAttribute("data-verdict");
+    else row.setAttribute("data-verdict", v);
     let pill = row.querySelector(
       ".pill.live-alive, .pill.live-gone, .pill.live-blocked, .pill.live-checking",
     );
@@ -1033,10 +1018,30 @@ async function surpriseMe() {
 
 $("surprise")?.addEventListener("click", surpriseMe);
 
-// Delegated, because renderLiveToggle rewrites this host on every search and a
-// direct listener would be thrown away with the first re-render.
-$("live-toggle")?.addEventListener("click", (e) => {
-  if (e.target.closest("#live-check")) verifyResults();
+/**
+ * Verify a row when the reader shows interest in it.
+ *
+ * Delegated on the results container, because that element survives every re-render
+ * while the rows inside it do not. A listener bound to each row would be thrown away
+ * with the next search; a delegated one sees every row, present and future.
+ *
+ * `pointerover` rather than `mouseover` because it also fires for touch and pen, so
+ * a tap-to-inspect on a phone works without a separate path. `focusin` covers
+ * keyboard readers, who are otherwise never counted -- and a keyboard reader is
+ * exactly the person for whom a badge that only appears on hover would be missing.
+ *
+ * Both are guarded against re-entry by the check inside verifyRow: a sweep of the
+ * pointer across twenty rows, or a reader tabbing back and forth, spends one request
+ * per distinct URL and no more.
+ */
+$("results")?.addEventListener("pointerover", (e) => {
+  const row = e.target.closest("[data-live]");
+  if (row) verifyRow(row.getAttribute("data-live"));
+});
+
+$("results")?.addEventListener("focusin", (e) => {
+  const row = e.target.closest("[data-live]");
+  if (row) verifyRow(row.getAttribute("data-live"));
 });
 
 /**

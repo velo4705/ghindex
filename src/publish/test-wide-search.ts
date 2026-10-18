@@ -397,15 +397,13 @@ const withEdge = (content: string) => {
 
   probe({ alive: true, status: 200, verdict: "alive" });
   const alive = await verifyLiveness("https://x.github.io/");
-  check("edge reports alive", alive?.alive === true);
-  eq("verdict passes through", alive?.verdict, "alive");
+  eq("edge reports alive", alive?.verdict, "alive");
 
   // The distinction that matters: a bot filter is not a dead site, and showing
   // it as one would libel a working site that is often highly starred.
   probe({ alive: false, status: 403, verdict: "blocked" });
   const blocked = await verifyLiveness("https://x.github.io/");
   eq("a refused request is blocked, not gone", blocked?.verdict, "blocked");
-  check("and not reported as dead", blocked?.alive === false);
 
   probe({ alive: false, status: 404, verdict: "gone" });
   const gone = await verifyLiveness("https://x.github.io/");
@@ -414,12 +412,21 @@ const withEdge = (content: string) => {
   probe({ alive: false, status: 0, verdict: "unreachable" });
   eq("no response is unreachable", (await verifyLiveness("https://x.github.io/"))?.verdict, "unreachable");
 
-  // A legacy response with no verdict must still yield something renderable,
-  // rather than an undefined class name in the UI.
+  // A response with no verdict must still yield something renderable, rather than
+  // an undefined class name in the UI. The fallback is derived from `alive` so the
+  // badge still says something true.
   probe({ alive: true, status: 200 });
   const legacy = await verifyLiveness("https://x.github.io/");
-  check("missing verdict degrades safely", legacy?.verdict === null || legacy?.verdict === undefined,
-    String(legacy?.verdict));
+  eq("missing verdict degrades safely", legacy?.verdict, "alive");
+  probe({ alive: false, status: 500 });
+  eq("and a missing verdict on a dead site says gone",
+    (await verifyLiveness("https://x.github.io/"))?.verdict, "gone");
+
+  // `alive` is not exposed any more: callers draw a badge from the verdict, and
+  // keeping the boolean would invite exactly the blocked-vs-gone confusion above.
+  check("the response carries a verdict rather than a bare boolean",
+    typeof legacy?.verdict === "string" && !("alive" in (legacy as object)),
+    JSON.stringify(legacy));
 
   globalThis.fetch = (async () => { throw new Error("network down"); }) as typeof fetch;
   const down = await verifyLiveness("https://x.github.io/");

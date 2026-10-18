@@ -475,28 +475,61 @@ check("and if the popup is blocked, it still opens the site",
   /if \(tab\) \{[\s\S]{0,120}?tab\.location\.replace\(target\)/.test(appCode) &&
   /\} else \{[\s\S]{0,300}?window\.location\.href = target/.test(appCode),
   "same-tab fallback");
-// Liveness is opt-in for a quota reason, not a cosmetic one: every batch is a
-// Worker request against a daily budget shared by every visitor, so it must not
-// fire on every page view unasked.
+// Liveness spends a Worker request against a daily budget shared by every visitor,
+// so it must not fire on every page view unasked. It also must not sit behind a
+// button: a control framed the check as an extra the site was withholding, when the
+// check is what keeps the site inside its budget at all. It follows the reader's
+// attention instead -- one row, one request, only for the row being considered.
 check("search results do not spend a request on liveness unasked",
-  !/if \(!state\.error\) verifyResults\(\)/.test(appCode),
-  "no automatic verifyResults on search");
-check("the check is offered to the reader instead",
-  /renderLiveToggle/.test(appCode) && /live-check/.test(appCode),
-  "opt-in control must exist");
-check("and it says what it does before it costs anything",
-  /Check which are still live/.test(appCode), "control states its effect");
-check("the host element exists in the page",
+  !/if \(!state\.error\) verifyRow\(/.test(appCode),
+  "no automatic verifyRow on search");
+check("and there is no batch verify left to fire",
+  !/verifyResults/.test(appCode), "the whole-page check is gone");
+check("no button is offered to press",
+  !/Check which are still live/.test(appCode) && !/id="live-check"/.test(appCode),
+  "no liveness button");
+check("a row is checked when the reader points at it",
+  /addEventListener\("pointerover"/.test(appCode) && /verifyRow\(/.test(appCode),
+  "pointer intent triggers the check");
+check("and on focus, so a keyboard reader is not excluded",
+  /addEventListener\("focusin"/.test(appCode), "focus triggers the check");
+// Touch and pen also fire pointerover; this is what keeps a phone from needing a
+// separate path, and it is asserted because the alternative is a dead control there.
+check("touch is covered by the same listener",
+  /pointerover/.test(appCode) && !/addEventListener\("mouseover"/.test(appCode),
+  "pointerover covers touch and pen");
+check("the check is delegated, so re-rendering does not orphan it",
+  /\$\("results"\)\?\.addEventListener/.test(appCode), "delegated on #results");
+// The re-entry guard is what makes "one row, one request" true. Without it, sweeping
+// the pointer down the list would spend a request per row and this would be the
+// automatic behaviour the whole change exists to avoid.
+check("one URL is verified at most once, however often it is hovered",
+  /if \(state\.live\.has\(url\)\) return;/.test(appCode),
+  "verdicts are memoised per URL");
+// The bug this guards: a per-row generation counter meant that pointing at a second
+// row while the first was still in flight invalidated the first, leaving it stuck on
+// "checking…" forever while still holding the request it had spent. Moving down a
+// list overlaps requests by definition, so a check that survives one hover must
+// survive the next.
+check("an overlapping check does not discard the one already in flight",
+  !/const token = \+\+state\.verifyToken/.test(appCode),
+  "no per-row generation counter");
+check("and a late verdict is still recorded",
+  !/token !== state\.verifyToken\) return;/.test(appCode.split("verifyRow")[1] ?? ""),
+  "verdicts are never thrown away");
+check("the host element still exists to report progress",
   /id="live-toggle"/.test(html), "live-toggle host");
-check("the control is not styled as the primary action",
-  /\.live-check \{[^}]*color: var\(--fg-muted\);[^}]*background: none;[^}]*\}/.test(html),
-  "quiet, not a call to action");
-// An already-checked set must not offer to be checked again: pressing twice would
-// spend the shared budget twice for the same answer.
-check("once checked, the control reports the count rather than re-offering",
-  /state\.live\.size === 1 \? "" : "s"/.test(appCode) &&
-  /Checked \$\{esc\(String\(state\.live\.size\)\)\}/.test(appCode),
-  "no repeat spend");
+check("and it reports rather than offers",
+  /renderLiveToggle/.test(appCode) && /Verified \$\{esc\(String\(checked\)\)\}/.test(appCode),
+  "accounting line");
+check("a checked row is marked, so it stops looking unverified",
+  /row\.setAttribute\("data-verdict"/.test(appCode), "data-verdict set");
+check("and the stylesheet clears the affordance once a verdict lands",
+  /\.row\[data-verdict\]/.test(html), "affordance removed");
+check("the badge still distinguishes blocked from dead",
+  /blocked: \{ cls: "live-blocked"/.test(appCode) &&
+  /gone: \{ cls: "live-gone"/.test(appCode),
+  "blocked is not dead");
 check("the navigation target is only ever a safeUrl result",
   /const candidates =[\s\S]{0,240}?safeUrl\(/.test(appCode) &&
   /window\.location\.href = target/.test(appCode),
