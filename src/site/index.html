@@ -24,6 +24,24 @@
   slower search rather than a broken one.
 -->
 <meta name="ghindex-edge" content="https://ghindex-search.ghindex.workers.dev" />
+  <!--
+    Preload the search module, and the taxonomy the picker needs.
+
+    app.js imports both statically now, so the browser is already fetching them
+    during load — but a static import discovered only when the parser reaches that
+    line is discovered late, and every one of them sits below a <style> block long
+    enough to cost the first interaction a real wait. Measured on the deployed
+    site: a cold Surprise Me click sat idle for roughly two seconds before its
+    search even left the browser. That was module resolution, not the worker, which
+    answers the same search in about 150ms.
+
+    These hints move the fetches to the preload scanner, which starts as soon as the
+    head is parsed. They change no behaviour: a browser that ignores them still
+    works, just as slowly as before.
+  -->
+  <link rel="modulepreload" href="./github-search.js" />
+  <link rel="modulepreload" href="./taxonomy.js" />
+  <link rel="modulepreload" href="./sky.js" />
 <style>
   /* ---------------------------------------------------------------------
      The wordmark.

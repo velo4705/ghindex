@@ -374,6 +374,36 @@ check("every candidate URL passes through safeUrl",
 // during the click and refuses one made after an await, so a naive
 // "search, then window.open" silently does nothing at all. Source-level because a
 // real popup would leave the test page behind.
+// Performance, and specifically a measured regression that already happened once.
+//
+// Surprise Me sat idle for about two seconds before its search even left the
+// browser. That was not the worker — the same search answers in ~150ms — it was
+// module resolution on the first click, because the search module was only ever
+// fetched by the dynamic import inside the handler. A static import discovered
+// when the parser reaches it is discovered late, and every one of these sat below
+// a long <style> block.
+//
+// The preload hints move those fetches to the preload scanner, which starts at head
+// parse. They are a hint, so the assertion is that they exist and point at modules
+// the page really uses — a hint pointing at nothing would pass a weaker test while
+// costing a wasted request.
+check("the search module is preloaded, so the first click does not wait for it",
+  /<link rel="modulepreload" href="\.\/github-search\.js"/.test(html),
+  "github-search.js preload hint");
+check("as is the taxonomy the picker needs",
+  /<link rel="modulepreload" href="\.\/taxonomy\.js"/.test(html),
+  "taxonomy.js preload hint");
+check("and exactly the preloaded modules are ones the page imports",
+  (() => {
+    const hinted = [...html.matchAll(/<link rel="modulepreload" href="\.\/([^"]+)"/g)].map((m) => m[1]);
+    const imported = ["github-search.js", "taxonomy.js", "sky.js"];
+    // Nothing hinted that is unused (a wasted request), and nothing imported is
+    // left unhinted (the cost this change exists to remove).
+    return hinted.length > 0 &&
+      hinted.every((h) => imported.includes(h)) &&
+      imported.every((i) => hinted.includes(i));
+  })(),
+  "preload hints and static imports must agree");
 check("the tab is opened before any await, or a popup blocker eats it",
   /const tab = window\.open\("", "_blank"\)/.test(appCode) &&
   appCode.indexOf('window.open("", "_blank")') < appCode.indexOf("const res = await searchGitHub"),
