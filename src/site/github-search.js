@@ -83,12 +83,28 @@ const API = "https://api.github.com/search/repositories";
 const EDGE_META = "ghindex-edge";
 
 /** The configured edge endpoint, or null when there is none. */
-export function edgeEndpoint() {
-  if (typeof document === "undefined") return null;
-  const el = document.querySelector(`meta[name="${EDGE_META}"]`);
-  const url = el && el.getAttribute("content");
-  return url && /^https:\/\//.test(url) ? url.replace(/\/+$/, "") : null;
-}
+  export function edgeEndpoint() {
+    if (typeof document === "undefined") return null;
+    const el = document.querySelector(`meta[name="${EDGE_META}"]`);
+    const url = el && el.getAttribute("content");
+    if (!url) return null;
+    /**
+     * HTTPS everywhere, with one deliberate exception: loopback over plain HTTP.
+     *
+     * The worker holds a GitHub token and returns public search data, but it is
+     * still a server-side endpoint and should not be reachable in the clear. That
+     * reasoning does not apply to 127.0.0.1, and excluding it would make it
+     * impossible to run the whole site — including the liveness badges, which need
+     * a worker and so silently disappear — against a worker on the developer's own
+     * machine. That is the case the browser suite exercises.
+     *
+     * The exception is by host, not by prefix, so `http://example.com` is still
+     * refused and a hostile meta value cannot talk this into plaintext.
+     */
+    const loopback = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/;
+    if (!/^https:\/\//.test(url) && !loopback.test(url)) return null;
+    return url.replace(/\/+$/, "");
+  }
 
 /**
  * Resolve a Pages URL for a repository.

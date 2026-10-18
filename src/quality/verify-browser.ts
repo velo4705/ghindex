@@ -15,7 +15,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PORT = Number(process.env.CDP_PORT ?? 9222);
-const BASE = process.env.BASE ?? "http://localhost:8099";
+// A port of its own, deliberately not the development one.
+  //
+  // The first version of this fix reused BASE (8099), and found a dev server left
+  // running from an earlier session: the suite saw a live port, reused it, and went
+  // on searching through production anyway. Warning about it is not good enough —
+  // the whole point is that this suite cannot spend the production budget, so the
+  // only safe response to "something is already on this port and I did not start
+  // it" is to refuse.
+  const TEST_PORT = Number(process.env.BROWSER_TEST_PORT ?? 8101);
+const BASE = `http://127.0.0.1:${TEST_PORT}`;
+
+/**
+ * The fixture worker's endpoint, filled in once the suite has started it.
+ *
+ * Module scope rather than local to main(), because runChecks needs it too: one
+ * check there fetches the search API directly rather than through the page, and
+ * it used a hardcoded production URL. Routing it through this value leaves no
+ * production host anywhere in the suite.
+ */
+let FIXTURE_URL = "";
 
 /**
  * How long to wait for a live search to come back.
@@ -93,12 +112,85 @@ async function main() {
   }
   console.log(`[browser] using ${browser}`);
 
+  // The page takes its search endpoint from a <meta> tag in the markup, so a
+  // browser run pointed at whatever worker is *deployed*. That is how this suite
+  // came to spend the production token's shared 30/minute budget: the page went to
+  // production while the HTML came from localhost. A run that exhausts that budget
+  // takes real users' searches down with it, and then fails here for reasons that
+  // have nothing to do with the browser.
+  //
+  // So the fixture worker is started first, and the dev server is told to rewrite
+  // the page's endpoint to point at it. If it cannot start, the suite refuses to
+  // run rather than quietly falling back to production.
+  // The worker binds an ephemeral port and prints it, so two runs cannot collide
+  // and a leftover process can never be mistaken for this one.
+
+  let fixtureWorker: ReturnType<typeof Bun.spawn> | null = null;
+  FIXTURE_URL = "";
+
+  /**
+   * Start the fixture worker and take its port from what it prints.
+   *
+   * This used to be a fixed port plus a health check, which is how a stale worker
+   * from an earlier run could answer the health check while the freshly spawned one
+   * had already died on a bind failure. The suite then ran against fixtures from
+   * code it no longer had, and the symptoms looked like a broken search rather
+   * than a stale process.
+   *
+   * Reading the port from the child's own output removes that: if this worker is
+   * the one that is running, it is by definition the one that printed this port.
+   */
+  {
+    const proc = Bun.spawn(["bun", "src/quality/fixture-worker.ts"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    fixtureWorker = proc;
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline && !FIXTURE_URL) {
+      const chunk = await Promise.race([
+        reader.read(),
+        Bun.sleep(500).then(() => ({ value: undefined, done: false })),
+      ]);
+      if (chunk?.value) buf += decoder.decode(chunk.value, { stream: true });
+      const m = buf.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+      if (m) FIXTURE_URL = `http://127.0.0.1:${m[1]}`;
+    }
+    if (!FIXTURE_URL) {
+      proc.kill();
+      console.error(
+        "Fixture worker did not report a port.\n" +
+          "  Without it this suite would search through the deployed worker and spend\n" +
+          "  the production rate-limit budget, so it stops here rather than do that.",
+      );
+      process.exit(1);
+    }
+    console.log(`[browser] started fixture worker at ${FIXTURE_URL}`);
+  }
+
   // Start the dev server ourselves unless one is already running, so this
   // check is self-contained. Previously it assumed an externally started
   // server and failed confusingly when run via `bun run test:all`.
   let server: ReturnType<typeof Bun.spawn> | null = null;
-  if (!(await isUp(BASE))) {
-    server = Bun.spawn(["bun", "run", "serve.ts"], { stdout: "ignore", stderr: "ignore" });
+  if (await isUp(BASE)) {
+    console.error(
+      `Something is already serving ${BASE}, and this suite did not start it.\n` +
+        "  It cannot be reused: the page's search endpoint comes from that server's\n" +
+        "  configuration, and a server without EDGE set would send these tests to the\n" +
+        "  deployed worker and spend the production rate-limit budget.\n" +
+        `  Free the port and try again, or set BROWSER_TEST_PORT to something else.`,
+    );
+    process.exit(1);
+  }
+  {
+    server = Bun.spawn(["bun", "serve.ts"], {
+      env: { ...process.env, PORT: String(TEST_PORT), EDGE: FIXTURE_URL },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
     let ready = false;
     for (let i = 0; i < 30; i++) {
       await Bun.sleep(1000);
@@ -109,16 +201,35 @@ async function main() {
       console.error(`Dev server never came up at ${BASE}`);
       process.exit(1);
     }
-    console.log("[browser] started dev server");
-  } else {
-    console.log("[browser] using already-running server");
-  }
+console.log(`[browser] started dev server on ${BASE}, page pointed at the fixture worker`);
+    }
 
+  let failures = 0;
   try {
-    await runChecks(browser);
+    failures = await runChecks(browser);
   } finally {
-    server?.kill();
+    /**
+     * Cleanup that runs after the checks, not alongside them.
+     *
+     * runChecks used to call process.exit itself, which unwinds straight past this
+     * `finally` — so the dev server and the fixture worker were never killed and
+     * every run leaked two processes holding their ports. The next run found those
+     * ports busy, and since a live port is indistinguishable from a healthy one it
+     * reused them, so stale code answered as though it were current.
+     *
+     * runChecks now returns a verdict and the exit code is decided here, after the
+     * cleanup has actually happened.
+     */
+    for (const child of [server, fixtureWorker]) {
+      if (!child) continue;
+      try {
+        child.kill();
+      } catch {
+        // Already gone, which is the state we wanted.
+      }
+    }
   }
+  process.exit(failures === 0 ? 0 : 1);
 }
 
 async function isUp(base: string): Promise<boolean> {
@@ -246,6 +357,19 @@ async function runChecks(browser: string) {
   };
 
   console.log("[browser] loading page…");
+  await send("Page.addScriptToEvaluateOnNewDocument", {
+  });
+  /**
+   * The endpoint this run's checks are allowed to talk to.
+   *
+   * One check fetched the deployed worker by hardcoded URL, which is precisely
+   * what this suite must never do: it spends the production token's budget to
+   * learn something the fixtures already know. Routing it through this constant
+   * leaves no hardcoded production host anywhere in the suite.
+   */
+  await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `window.__EDGE__ = ${JSON.stringify(FIXTURE_URL)};`,
+  });
   await send("Page.navigate", { url: BASE + "/index.html" });
   await Bun.sleep(3000);
 
@@ -919,13 +1043,13 @@ check("the picker carries no heading", await evalJs(`document.querySelectorAll('
       empty: (el.querySelector('.empty') || {}).textContent || '',
       busy: el.getAttribute('aria-busy'),
       pending: (document.querySelector('.pagebtn.pending') || {}).textContent || '',
-      current: (document.querySelector('.pagebtn.current') || {}).textContent || '',
+      current: document.querySelector('.pagebtn.current')?.textContent || '',
       // The control must survive: a reader who realises they chose wrong needs
       // to be able to correct it without waiting out the fetch.
       pagerPresent: !!document.querySelector('#results .pager'),
       disabled: el.querySelectorAll('.pagebtn[disabled]').length,
       spinner: el.querySelectorAll('.spinner').length,
-      spinnerHidden: (el.querySelector('.spinner') || {}).getAttribute('aria-hidden'),
+      spinnerHidden: el.querySelector('.spinner')?.getAttribute('aria-hidden') ?? null,
       spinnerAnim: (() => {
         const s = el.querySelector('.spinner');
         return s ? getComputedStyle(s).animationName : '';
@@ -1204,7 +1328,7 @@ check("and the title comes before the badge in the row", badgeAlign.titleFirst =
     const out = {};
     const grab = async (sort) => {
       const r = await fetch(
-        'https://ghindex-search.ghindex.workers.dev/api/search' +
+        window.__EDGE__ + '/api/search' +
         '?q=' + encodeURIComponent('portfolio') + '&page=1&per_page=40&sort=' + sort);
       const j = await r.json();
       return (j.items ?? []).filter(i => i.has_pages).slice(0, 5).map(i => i.full_name);
@@ -1554,10 +1678,22 @@ await evalJs(`document.querySelector('#sortbar .sortbtn[aria-pressed=true]')?.da
 
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 
-  console.log(`\n${failures === 0 ? "ALL BROWSER CHECKS PASSED" : `${failures} BROWSER CHECK(S) FAILED`}`);
-  ws.close();
-  proc.kill();
-  process.exit(failures === 0 ? 0 : 1);
-}
+console.log(`\n${failures === 0 ? "ALL BROWSER CHECKS PASSED" : `${failures} BROWSER CHECK(S) FAILED`}`);
+    ws.close();
+    proc.kill();
+    /**
+     * Return the verdict instead of exiting.
+     *
+     * Calling process.exit here unwinds straight past the `finally` in main(), so
+     * the dev server and the fixture worker were never killed and every run leaked
+     * two processes holding their ports. The next run then found those ports busy,
+     * and since a live port is indistinguishable from a healthy one it reused them
+     * — stale code answering as though it were current.
+     *
+     * Deciding the exit code at the very end, once cleanup has run, is the only
+     * ordering that tidies up.
+     */
+    return failures;
+  }
 
 await main();
