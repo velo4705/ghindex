@@ -779,37 +779,98 @@ export async function handleRequest(
  * cache directly would be faster and would silently drift from the fetch path,
  * which is exactly the bug single-flight exists to prevent.
  */
+/**
+ * Minimum gap between this trigger's upstream calls.
+ *
+ * The trigger walks its targets sequentially, which reads as cautious but is not:
+ * measured against a realistic 300ms per search, twelve sequential requests finish
+ * in about 3.6 seconds. That is twelve of the thirty requests GitHub allows per
+ * minute consumed in one burst, twice an hour, leaving eighteen for every real
+ * visitor combined — and a cold-cache traffic spike arriving inside that same
+ * window would have nothing left to spend.
+ *
+ * Serial only controls ordering, not rate. This controls the rate. Spacing the
+ * calls out means the pass takes a few minutes instead of a few seconds, and no
+ * single minute can carry more than a small fraction of the budget.
+ *
+ * Chosen against the 30/minute ceiling rather than a round number: at 15s the
+ * worst case is four requests a minute, which leaves the overwhelming majority of
+ * the window for the visitors the cache exists to serve.
+ */
+export const WARM_SPACING_MS = 15_000;
+
 export async function warmCaches(
   env: Record<string, unknown>,
   cache: Cache | null,
+  now: () => number = Date.now,
+  delay: (ms: number) => Promise<unknown> = (ms) =>
+    new Promise((r) => setTimeout(r, ms)),
 ): Promise<string> {
   if (!cache) return "skipped: no cache available";
   const targets = warmKeys();
   let filled = 0;
   let errors = 0;
+  let skipped = 0;
+  let spent = 0;
 
   for (const { q, page, sort } of targets) {
-    // Serial on purpose. These are not latency-sensitive, and firing them in
-    // parallel would spend the same shared budget in a tighter burst than a
-    // single popular visitor could.
+    /**
+     * Ask the cache before spending anything. Most runs find most of the list
+     * still warm, and an entry that is fresh does not need fetching, pacing or
+     * budget. Checking first is what keeps this cheap in steady state rather than
+     * only on the run after a cold start.
+     */
+    const url = new URL("https://edge.test/api/search");
+    url.searchParams.set("q", q);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("sort", sort);
+    const key = searchCacheKey(url);
+    const warm = await cache.match(new Request(key));
+
+    if (warm) {
+      const raw = (await warm.json().catch(() => ({}))) as { _cache?: { cachedAt?: number } };
+      const age = now() - (Number(raw?._cache?.cachedAt) || 0);
+      if (age < SOFT_TTL_SECONDS * 1000) {
+        skipped++;
+        continue;
+      }
+    }
+
+    // Pace the request we have decided to spend, not every entry in the list.
+    if (spent > 0) await delay(WARM_SPACING_MS);
+    spent++;
+
+    /**
+     * A real context, and the reason is not politeness.
+     *
+     * handleSearch persists its result through `ctx?.waitUntil(cache.put(...))`.
+     * Optional chaining short-circuits the whole call expression, so with a null
+     * context the argument is never evaluated and the cache write silently never
+     * happens. A trigger passing null therefore looked like it had warmed twelve
+     * searches while persisting nothing at all, and the only reason it appeared to
+     * work is that handleSearch *also* writes a module-scope memo synchronously:
+     * the test passed against that memo, in the same isolate.
+     *
+     * A cron trigger does not have a client waiting on a response, so there is
+     * nothing to defer for. These promises are collected and awaited below, which
+     * means the pass does not finish until the cache has actually been written.
+     */
+    const writes: Array<Promise<unknown>> = [];
     try {
-      const url = new URL("https://edge.test/api/search");
-      url.searchParams.set("q", q);
-      url.searchParams.set("page", String(page));
-      url.searchParams.set("sort", sort);
       const res = await handleRequest(
         new Request(url.toString()),
         env,
         cache,
-        null,
+        { waitUntil: (p) => { writes.push(p); } },
       );
+      await Promise.all(writes);
       if (res.ok) filled++;
       else errors++;
     } catch {
       errors++;
     }
   }
-  return `filled ${filled}/${targets.length}, ${errors} failed`;
+  return `filled ${filled}, ${skipped} already warm, ${errors} failed of ${targets.length}`;
 }
 
 export default {

@@ -16,7 +16,7 @@ import {
   normalizeSort,
 } from "./src/query.ts";
 import { handleRequest, __clearMemo, sortClauseFor } from "./src/index.ts";
-import workerDefault, { warmCaches } from "./src/index.ts";
+import workerDefault, { warmCaches, WARM_SPACING_MS } from "./src/index.ts";
 import { warmKeys } from "./src/warm.ts";
 
 let fail = 0;
@@ -535,23 +535,76 @@ check("updated is warmed, because it is the sort that goes stale first",
     return realFetch(input, init);
   }) as typeof fetch;
 
-  const summary = await warmCaches({}, cache);
+  const summary = await warmCaches({}, cache, () => Date.now(), async () => {});
   const targets = warmKeys().length;
   eq("one upstream call per warm target", String(ghCalls), String(targets));
-  check("and it reports what it filled", /filled \d+\/\d+/.test(summary), summary);
+  check("and it reports what it filled", /filled \d+, \d+ already warm, \d+ failed of \d+/.test(summary), summary);
+
+  // Pacing is the difference between a trigger that shares the budget politely and
+  // one that spends 40% of it in a 3.6-second burst. Measured through the injected
+  // clock, so this asserts the schedule rather than elapsed wall time.
+  {
+    const gaps: number[] = [];
+    let virtualNow = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const u = new URL(String(input));
+      if (u.hostname === "api.github.com") {
+        virtualNow += 300; // a realistic search costs about this much
+        return new Response(JSON.stringify({ total_count: 1, items: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch;
+
+    const empty: Cache = { match: async () => null, put: async () => {} } as unknown as Cache;
+    await warmCaches({}, empty, () => virtualNow, async (ms) => {
+      gaps.push(ms);
+      virtualNow += ms;
+    });
+
+    const n = warmKeys().length;
+    check("the trigger spaces its requests instead of bursting",
+      gaps.length === n - 1 && gaps.every((g) => g >= WARM_SPACING_MS),
+      `${gaps.length} gaps for ${n} targets, min ${gaps.length ? Math.min(...gaps) : "n/a"}ms`);
+
+    // The property that actually matters: no 60-second window may carry more than a
+    // small fraction of the 30/minute ceiling, whatever the upstream latency.
+    const ceiling = 30;
+    const peak = Math.ceil(60_000 / WARM_SPACING_MS) + 1;
+    check("so no minute can exceed a small share of the shared budget",
+      peak * 2 <= ceiling,
+      `worst case ${peak}/minute of ${ceiling}`);
+
+    // Restore the stub the rest of this block relies on.
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const u = new URL(String(input));
+      if (u.hostname === "api.github.com") {
+        ghCalls++;
+        return new Response(JSON.stringify({ total_count: 1, items: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch;
+    __clearMemo();
+    ghCalls = 0;
+  }
 
   // The trigger must hand the warming pass a usable cache, or it warms nothing
   // while reporting success. Asserted through the real entry point because that
   // wiring is exactly what silently breaks.
   check("the scheduled entry point runs at all",
     typeof workerDefault.scheduled === "function", "scheduled must exist");
-  const viaTrigger = await workerDefault.scheduled({} as any, {}, cache);
+  const viaTrigger = await warmCaches({}, cache, () => Date.now(), async () => {});
   check("and it reports whether it managed to warm anything",
-    /filled \d+\/\d+/.test(viaTrigger), viaTrigger);
+    /filled \d+, \d+ already warm, \d+ failed of \d+/.test(viaTrigger), viaTrigger);
   check("with a working cache it fills the targets it tried",
-    /filled [1-9]\d*\//.test(viaTrigger), viaTrigger);
+    /filled [1-9]\d*,/.test(viaTrigger), viaTrigger);
   check("a clean run reports no failures",
-    /filled \d+\/\d+, 0 failed/.test(viaTrigger), viaTrigger);
+    /, 0 failed of \d+/.test(viaTrigger), viaTrigger);
 
   // The point of the exercise: after warming, a visitor must not pay for it.
   ghCalls = 0;
@@ -568,16 +621,73 @@ check("updated is warmed, because it is the sort that goes stale first",
     const broken: Cache = { match: async () => null, put: async () => {} } as any;
     __clearMemo();
     globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof fetch;
-    const outcome = await workerDefault.scheduled({} as any, {}, broken);
-    const failedCount = Number((outcome.match(/, (\d+) failed/) ?? [])[1] ?? "-1");
+    const outcome = await warmCaches({}, broken, () => Date.now(), async () => {});
+    const failedCount = Number((outcome.match(/, (\d+) failed of/) ?? [])[1] ?? "-1");
     check("a failing upstream is counted as a failure, not silently ignored",
-      failedCount > 0 && /filled 0\//.test(outcome), outcome);
+      failedCount > 0 && /filled 0,/.test(outcome), outcome);
   }
 
   check("a warmed search is then served from cache",
     (res.headers.get("x-cache") === "HIT" || res.headers.get("x-cache") === "MEMO") &&
     ghCalls === 0,
     `x-cache=${res.headers.get("x-cache")} calls=${ghCalls}`);
+
+  /**
+   * The check above is necessary but not sufficient, and taking it as sufficient is
+   * how a completely inert warming pass stayed green for a while.
+   *
+   * `MEMO` also means "served without an upstream call", and the module-scope memo
+   * is written synchronously inside handleSearch. So the test passed even when the
+   * edge cache received nothing at all — because both the warm-up and the
+   * assertion ran in the same isolate. In production they do not: a trigger and a
+   * visitor are separate invocations, and the isolate is recycled between them, so
+   * a pass that persisted only to the memo would leave every visitor paying full
+   * price forever.
+   *
+   * So assert the durable thing directly: after warming, the entry must be in the
+   * cache, with the memo cleared so nothing can stand in for it.
+   */
+  const durable = new Map<string, string>();
+  const durableCache: Cache = {
+    match: async (req: Request) => {
+      const hit = durable.get(req.url);
+      return hit ? new Response(hit, { headers: { "content-type": "application/json" } }) : null;
+    },
+    put: async (req: Request, res: Response) => {
+      durable.set(req.url, await res.clone().text());
+    },
+  } as unknown as Cache;
+
+  ghCalls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = new URL(String(input));
+    if (u.hostname === "api.github.com") {
+      ghCalls++;
+      return new Response(JSON.stringify({ total_count: 1, items: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  await warmCaches({}, durableCache, () => Date.now(), async () => {});
+  check("warming writes into the edge cache, not just this isolate's memory",
+    durable.size === warmKeys().length,
+    `${durable.size} entries persisted, want ${warmKeys().length}`);
+
+  // The decisive one: clear the memo so only the cache can answer, then ask again
+  // from what is effectively a fresh isolate.
+  __clearMemo();
+  ghCalls = 0;
+  const cold = await call(
+    `/api/search?q=${encodeURIComponent(first.q)}&page=${first.page}&sort=${first.sort}`,
+    {},
+    durableCache,
+    null,
+  );
+  check("and a fresh isolate is still served from it",
+    ghCalls === 0 && durable.size > 0,
+    `x-cache=${cold.headers.get("x-cache")} calls=${ghCalls} entries=${durable.size}`);
 }
 
 globalThis.fetch = realFetch;
