@@ -86,10 +86,16 @@ const item = (fullName: string, stars: number, pages = true) => {
 type Call = { url: string };
 
 /**
- * Stub fetch to serve `perPage` items per page from a pool, so the test can
- * assert how many requests a given `pages` argument costs.
+ * Stub fetch to serve the search API's maximum page, so the test can assert how
+ * many requests a given `pages` argument costs and how many *sites* come back.
+ *
+ * The default has to match what the front-end actually asks for, not what it shows:
+ * it requests 100 repositories and trims to 40 sites after dropping everything
+ * without a Pages page. Stubbing 40 here would make every row-count assertion below
+ * pass by accident, because a 40-repository page would happen to yield exactly 40
+ * unfiltered rows.
  */
-function stubPool(pool: unknown[], total: number, perPage = 40) {
+function stubPool(pool: unknown[], total: number, perPage = 100) {
   const calls: Call[] = [];
   globalThis.fetch = (async (url: string) => {
     calls.push({ url });
@@ -126,20 +132,25 @@ console.log("=== one page costs exactly one call ===");
   check("and it is page 3 that was requested",
     calls.every((c) => c.url.includes("page=3")),
     calls.map((c) => c.url).join(", "));
-// 40 is what the pager uses: GitHub serves page N only while (N - 1) * per_page
-    // is under its 1,000-result ceiling, so the page size and the page count are
-    // two views of one limit.
-    check("per_page is 40, the size the pager uses",
-      calls.every((c) => c.url.includes("per_page=40")));
+// 100 is what the pager now asks for: GitHub serves page N only while
+    // (N - 1) * per_page is under its 1,000-repository ceiling, so the fetch size and
+    // the page count are two views of one limit. Ten pages of a hundred is exactly
+    // 1,000, which is why the pager is ten deep rather than twenty-five.
+    check("per_page is 100, the fetch size that makes 40 sites a page possible",
+      calls.every((c) => c.url.includes("per_page=100")),
+      calls.map((c) => c.url).join(", "));
   check("sorted by stars, descending",
     r.results.every((x, i, a) => i === 0 || a[i - 1].stars >= x.stars));
   check("has_pages=false rows are dropped",
     r.results.every((x) => !x.full_name.startsWith("nope")));
   eq("the result names its page", String(r.page), "3");
-  // The pool is 250 Pages items followed by 50 that must be filtered out. Page 3
-  // of 40 starts at offset 80, so it is still inside the Pages region and returns
-  // a full 40 rows. The filtering is asserted separately below.
+  // The pool is 250 Pages items followed by 50 that must be filtered out. Page 3 of
+  // 100 starts at offset 200, which spans the last 50 Pages items and all 50 of the
+  // noise: 100 repositories in, 50 survive the filter, and the trim holds the page
+  // at 40. Both halves are asserted below.
   check("only that page's rows come back", r.results.length === 40 ? "ok" : `got ${r.results.length}`);
+  check("and the first row is the first item of page 3, not of page 1",
+    r.results[0]?.full_name === "owner200/repo200", r.results[0]?.full_name ?? "none");
 }
 
 {
@@ -148,7 +159,28 @@ console.log("=== one page costs exactly one call ===");
   const r = await searchGitHub("portfolio", { page: 1 });
   globalThis.fetch = realFetch;
   eq("page 1 costs one call", String(calls.length), "1");
-  check("one page returns a full 40 rows", r.results.length === 40 ? "ok" : `got ${r.results.length}`);
+  // Page 1 is 100 repositories that all have Pages, so without a trim this is where
+  // the old bug would show worst: 100 rows on a page whose summary said 40.
+  check("a full 100-repository page is trimmed to 40 rows",
+    r.results.length === 40 ? "ok" : `got ${r.results.length}`);
+  check("and the trim keeps the highest-ranked rows",
+    r.results[0]?.full_name === "owner0/repo0" && r.results[39]?.full_name === "owner39/repo39",
+    `${r.results[0]?.full_name} .. ${r.results[39]?.full_name}`);
+}
+
+{
+  // The other side of the trim: when a page yields fewer sites than the page size,
+  // the short page is returned short. Padding it would mean showing rows the search
+  // never returned, which is the mirror image of the bug.
+  const sparse: unknown[] = [];
+  for (let i = 0; i < 12; i++) sparse.push(item(`few${i}/repo${i}`, 100 - i));
+  for (let i = 0; i < 88; i++) sparse.push(item(`nada${i}/lib${i}`, 5000, false));
+  const calls = stubPool(sparse, 4000);
+  const r = await searchGitHub("portfolio", { page: 1 });
+  globalThis.fetch = realFetch;
+  eq("a sparse page still costs one call", String(calls.length), "1");
+  check("a page yielding 12 sites returns 12, not a padded 40",
+    r.results.length === 12 ? "ok" : `got ${r.results.length}`);
 }
 
 {
@@ -168,14 +200,18 @@ console.log("=== how many pages exist ===");
   check("page count is the reachable one, not the reported total",
     pageCount(7354) === MAX_PAGES_FOR_TEST, `got ${pageCount(7354)}`);
   check("a short result set is one page", pageCount(40) === 1, `got ${pageCount(40)}`);
-  // Page boundaries follow the 40-per-page the pager actually requests.
-  check("exactly 40 results is one page", pageCount(40) === 1, `got ${pageCount(40)}`);
-  check("41 results is two pages", pageCount(41) === 2, `got ${pageCount(41)}`);
-  check("80 results is two full pages", pageCount(80) === 2, `got ${pageCount(80)}`);
-  check("81 results spills into a third", pageCount(81) === 3, `got ${pageCount(81)}`);
-  // The reachable count is the same 1,000 whichever way it is sliced.
+  // Page boundaries follow the 100-repository fetch, not the 40 sites shown.
+  // Sizing them by the display size is what produced a pager offering pages of ten.
+  check("exactly one fetch's worth is one page", pageCount(100) === 1, `got ${pageCount(100)}`);
+  check("101 repositories spills into a second page", pageCount(101) === 2, `got ${pageCount(101)}`);
+  check("200 repositories is two pages", pageCount(200) === 2, `got ${pageCount(200)}`);
+  check("201 repositories is three pages", pageCount(201) === 3, `got ${pageCount(201)}`);
+  // 1,000 repositories is ten pages of a hundred, which is the whole of what GitHub
+  // will serve. Anything past it is a page that fails rather than one that runs out.
   check("a pool of exactly 1,000 fills every page",
     pageCount(1000) === MAX_PAGES_FOR_TEST, `got ${pageCount(1000)}`);
+  check("the pager never offers a page past the 1,000 GitHub serves",
+    pageCount(999999) === MAX_PAGES_FOR_TEST, `got ${pageCount(999999)}`);
   check("no results is no pages", pageCount(0) === 0, `got ${pageCount(0)}`);
 
   const calls = stubPool(pool, 7354);

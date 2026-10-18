@@ -743,14 +743,23 @@ function summaryHtml() {
     );
   }
 if (state.total > n) {
-      // The reachable figure is this page count times the page size, not GitHub's
-      // 1,000 ceiling. Those were the same number when the pager ran to twenty-five
-      // pages; now they differ, and quoting the ceiling here would tell the reader
-      // they could go further when the pager will not let them.
+      // What is actually reachable, stated as the limit it is rather than as a
+      // number the reader could catch us overstating.
+      //
+      // The naive figure is the page count times the page size, and it is wrong now
+      // that the two are separate: only about a quarter of the repositories GitHub
+      // returns have a Pages site, so ten pages of forty *slots* hold somewhere
+      // around 200-400 sites depending on the query. Quoting 400 would overstate it
+      // for most searches, and the reader has no way to tell which they got.
+      //
+      // So it names the thing that is actually true and constant: GitHub will not
+      // serve past its first 1,000 matching repositories, and the pager goes exactly
+      // that deep. That is checkable, and it does not depend on a yield we cannot
+      // know without fetching every page.
       bits.push(
         `${state.total.toLocaleString()} repos match` +
           (state.truncated
-            ? `, of which only the first ${(state.pageCount * RESULTS_PER_PAGE).toLocaleString()} are reachable`
+            ? `, of which only the first 1,000 are reachable — the depth GitHub allows`
             : ""),
       );
     }

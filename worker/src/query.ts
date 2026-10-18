@@ -68,7 +68,13 @@ export function clampPage(raw: string | null): number {
  *
  * Exported rather than duplicated so the two cannot drift. A drift here is the
  * quiet kind: the pager offers ten pages, the worker serves twenty-five, and
- * nothing looks broken while every deep request spends budget on nothing.
+ * nothing looks broken while every deep request spends budget on results no reader
+ * can ask for.
+ *
+ * Ten because that is the ceiling: the front-end requests 100 repositories per
+ * call, and GitHub serves no further than the first 1,000. Ten hundred is exactly
+ * 1,000, so every page the pager offers is one GitHub will answer, and the pager
+ * cannot run off the end of the index.
  */
 export const MAX_PAGES = 10;
 

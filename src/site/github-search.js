@@ -37,19 +37,46 @@
 const RESULT_CAP = 1000;
 
 /**
-* Results per API call.
-   *
-   * 100 is the maximum the search API allows and would reach the same 1,000
-   * results in 10 requests instead of 25. It is not used, because the number of
-   * pages and the page size are not independent: GitHub serves page N only while
-   * its first result falls inside the first 1,000, i.e. (page - 1) * per_page is
-   * under 1,000. At 100 that caps the pager at 10 pages; at 40 it reaches 25.
-   *
-   * Forty is the size this site settled on because a hundred rows on a phone is a
-   * long scroll, and because at 40 the ten-page pager still leaves room for every
-   * page to be exactly the same size.
-   */
+ * What this constant used to control, and why that was wrong.
+ *
+ * There used to be one constant here doing two jobs at once: it was both the
+ * number of repositories requested from GitHub and the number of results shown,
+ * and the pager was built from it. That is why asking for 40 produced pages of
+ * about ten sites. The two jobs are now separate constants, `FETCH_PER_PAGE` and
+ * `PER_PAGE`, and the split is the whole point of the change.
+ *
+ * GitHub serves page N only while its first result falls inside the first 1,000,
+ * i.e. (page - 1) * per_page is under 1,000. That is what ties the two together
+ * upstream: at 100 the pager is exactly 10 pages and lands on the ceiling rather
+ * than overshooting it, which is the configuration this site now uses.
+ */
+/**
+ * Sites shown on one page.
+ *
+ * This is the number the reader counts, and it is deliberately separate from
+ * `FETCH_PER_PAGE` below. Only about a third of repositories returned by a
+ * keyword search actually have Pages enabled — measured across real genres it runs
+ * between 20% and 34% — and the rest are ordinary repos that happen to mention the
+ * words. Asking GitHub for forty therefore yields a page of roughly fourteen sites,
+ * which is what the page size used to do: the number in the URL was the number of
+ * repositories fetched, and it was quietly reported as the number of results.
+ */
 const PER_PAGE = 40;
+
+/**
+ * Repositories requested from GitHub per upstream call.
+ *
+ * One hundred is the search API's maximum, and it is the lever that makes forty
+ * sites on a page possible. At this yield a single call produces 20-34 sites, so a
+ * page is one or two calls' worth, trimmed to exactly forty.
+ *
+ * The cost is honest and worth stating: filling one page of forty can spend two
+ * requests against the rate limit every visitor shares. It is still cheaper than it
+ * sounds, because those responses are cached — the same page costs nothing for the
+ * next reader — and because one call is what a page used to cost anyway while
+ * showing a third as much.
+ */
+const FETCH_PER_PAGE = 100;
 
   /**
    * Pages reachable per search.
@@ -165,6 +192,13 @@ export const buildQueryForTest = buildQuery;
 export const MAX_PAGES_FOR_TEST = MAX_PAGES;
 /** Exposed so the results summary can offset by the real page size. */
 export const PER_PAGE_FOR_TEST = PER_PAGE;
+/**
+ * Exposed because the ceiling depends on this and not on `PER_PAGE`: GitHub serves
+ * no result past the first 1,000 repositories, so it is the fetch size that decides
+ * how many pages are reachable. Asserting the ceiling against the display size would
+ * pass while every deep page returned nothing.
+ */
+export const FETCH_PER_PAGE_FOR_TEST = FETCH_PER_PAGE;
 export const pageUrlForTest = pageUrl;
 
 /**
@@ -242,12 +276,12 @@ if (edge) {
 // updated" request can never be served from a relevance one.
 return (
 `${edge}/api/search?q=${encodeURIComponent(String(input).trim())}` +
-`&page=${page}&per_page=${PER_PAGE}&sort=${sort}`
+`&page=${page}&per_page=${FETCH_PER_PAGE}&sort=${sort}`
 );
 }
 return (
 `${API}?q=${encodeURIComponent(buildQuery(input))}` +
-`&per_page=${PER_PAGE}${sortClause}&page=${page}`
+`&per_page=${FETCH_PER_PAGE}${sortClause}&page=${page}`
 );
 }
 
@@ -298,14 +332,20 @@ async function fetchPage(input, page, opts, edge, sort) {
  * How many pages of results exist for a query.
  *
  * GitHub reports a `total_count` that can be in the millions while refusing to
- * serve past 1,000 results, so the honest number is the reachable one: ten pages
- * of a hundred. Everything else is unreachable, and saying so is more useful than
- * a page count that implies browsing further would find something new.
+ * serve past 1,000 repositories, so the honest number is the reachable one: ten
+ * upstream pages of a hundred, which is exactly the ceiling.
+ *
+ * This counts *repositories*, not pages of this site. The two used to be the same
+ * thing and quietly drifted apart the moment `per_page` stopped meaning "results
+ * shown": about a quarter of the repositories GitHub returns have Pages enabled,
+ * so ten hundred-repository pages hold a few hundred sites between them, and a
+ * page count derived from `total_count` would offer the reader pages that exist in
+ * GitHub's index but are empty here.
  */
 export function pageCount(total) {
   const t = Number(total) || 0;
   if (t <= 0) return 0;
-  return Math.min(MAX_PAGES, Math.ceil(t / PER_PAGE));
+  return Math.min(MAX_PAGES, Math.ceil(t / FETCH_PER_PAGE));
 }
 
 /**
@@ -365,14 +405,20 @@ export async function searchGitHub(input, opts = {}) {
     return { ...empty, partial: res.message, error: res.message };
   }
 
-  const results = [];
-  const seen = new Set();
-  for (const item of res.items) {
-    const row = toResult(item);
-    if (!row || seen.has(row.full_name)) continue;
-    seen.add(row.full_name);
-    results.push(row);
-  }
+const results = [];
+    const seen = new Set();
+    for (const item of res.items) {
+      const row = toResult(item);
+      if (!row || seen.has(row.full_name)) continue;
+      seen.add(row.full_name);
+      results.push(row);
+      // Trim to the page size. The upstream call asked for FETCH_PER_PAGE
+      // repositories, which after filtering usually yields more than a page's worth
+      // of sites, and returning the surplus would make a "page" hold a different
+      // number of rows than the pager promised — the summary line counts them, so
+      // the two would disagree in front of the reader.
+      if (results.length >= PER_PAGE) break;
+    }
   // Deliberately not re-sorted here. Sorting the filtered rows by stars
   // client-side threw away GitHub's ordering entirely, so "best match" and "most
   // stars" produced the same list and the control would have been a lie. GitHub

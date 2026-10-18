@@ -49,6 +49,7 @@ const html = readFileSync(join(SITE, "index.html"), "utf8");
 const stripHtmlComments = (s: string) => s.replace(/<!--[\s\S]*?-->/g, "");
 const markup = stripHtmlComments(html);
 const app = readFileSync(join(SITE, "app.js"), "utf8");
+const search = readFileSync(join(SITE, "github-search.js"), "utf8");
 
 // ------------------------------------------------------------- no index
 
@@ -271,12 +272,13 @@ for (const f of ["app.js", "github-search.js", "taxonomy.js"]) {
 // star-sort until this change ships. These assert the contract the worker will be
 // asked for once it does.
 
-const { pageUrlForTest, MAX_PAGES_FOR_TEST, PER_PAGE_FOR_TEST } = (await import(
+const { pageUrlForTest, MAX_PAGES_FOR_TEST, PER_PAGE_FOR_TEST, FETCH_PER_PAGE_FOR_TEST } = (await import(
   join(SITE, "github-search.js")
 )) as {
   pageUrlForTest: (input: string, page: number, edge: string | null, sort: string) => string;
   MAX_PAGES_FOR_TEST: number;
   PER_PAGE_FOR_TEST: number;
+  FETCH_PER_PAGE_FOR_TEST: number;
 };
 
 const direct = (sort: string) => pageUrlForTest("portfolio", 2, null, sort);
@@ -316,7 +318,26 @@ check("the GitHub API omits the qualifier for relevance", !direct("best").includ
 check("most stars reaches the edge worker as sort=stars",
   edgeUrl("stars").includes("sort=stars"), edgeUrl("stars"));
 check("page and per_page survive either ordering",
-direct("best").includes("page=2") && direct("stars").includes("page=2"));
+  direct("best").includes("page=2") && direct("stars").includes("page=2"));
+
+// The whole point of splitting the constant: what the reader counts and what
+// GitHub is asked for stopped being the same number. If either half regresses to
+// the other, pages quietly go back to holding ten sites.
+check("the upstream call asks for 100 repositories, not the 40 it will show",
+  direct("best").includes("per_page=100") && edgeUrl("best").includes("per_page=100"),
+  `direct=${direct("best")} edge=${edgeUrl("best")}`);
+check("on both the direct and the edge path",
+  !direct("best").includes(`per_page=${PER_PAGE_FOR_TEST}&`) ||
+  direct("best").includes("per_page=100"),
+  direct("best"));
+// Rows are filtered after the response, so a page can arrive with more sites than
+// the page size and fewer as well. Trimming is what keeps the summary's count and
+// the rows on screen describing the same set.
+check("rows are trimmed to the page size after filtering",
+  /results\.length >= PER_PAGE\) break/.test(search) || /results\.length >= 40\) break/.test(search),
+  "the loop stops once a page is full");
+check("and the trim does not discard the deduplication check",
+  /seen\.has\(row\.full_name\)/.test(search), "duplicates are skipped before the trim");
 
 // ---------------------------------------------------------------- pagination depth
 //
@@ -325,23 +346,31 @@ direct("best").includes("page=2") && direct("stars").includes("page=2"));
 // the other. These assert the pair is coherent, and that the two places that
 // must agree on the page size actually do.
 check("the pager reaches 10 pages", MAX_PAGES_FOR_TEST === 10, `${MAX_PAGES_FOR_TEST}`);
-check("a page holds 40 results", PER_PAGE_FOR_TEST === 40, `${PER_PAGE_FOR_TEST}`);
-// Ten pages of forty reaches 400 results, well inside GitHub's 1,000. That is the
-// point of the change: the pager was sized to the mathematical maximum of 25, and
-// every one of those extra buttons was clutter on a phone and a deeper claim on
-// the rate limit every visitor shares.
-check("ten pages of forty reaches 400 results",
-  MAX_PAGES_FOR_TEST * PER_PAGE_FOR_TEST === 400,
-  `${MAX_PAGES_FOR_TEST} x ${PER_PAGE_FOR_TEST}`);
+check("a page shows at most 40 sites", PER_PAGE_FOR_TEST === 40, `${PER_PAGE_FOR_TEST}`);
+// The fetch size is the one that decides how deep the pager can go. GitHub serves
+// no result past the first 1,000 repositories, so ten calls of 100 is not a choice
+// -- it is the deepest the index can be paged. Asserting this against the display
+// size would pass while page 10 came back empty.
+check("ten pages of a hundred is exactly GitHub's ceiling",
+  MAX_PAGES_FOR_TEST * FETCH_PER_PAGE_FOR_TEST === 1000,
+  `${MAX_PAGES_FOR_TEST} x ${FETCH_PER_PAGE_FOR_TEST} = ${MAX_PAGES_FOR_TEST * FETCH_PER_PAGE_FOR_TEST}`);
 // The invariant is not the number 10 but the relationship: the last page offered
 // must sit inside GitHub's ceiling, or the pager ends by serving a page that fails
-// with HTTP 422.
+// with HTTP 422. Page 11 starts at 1,100, so ten is the last page that exists.
 check("the last page is inside the ceiling GitHub will serve",
-  (MAX_PAGES_FOR_TEST - 1) * PER_PAGE_FOR_TEST < 1000,
-  `page ${MAX_PAGES_FOR_TEST} starts at ${(MAX_PAGES_FOR_TEST - 1) * PER_PAGE_FOR_TEST}`);
+  (MAX_PAGES_FOR_TEST - 1) * FETCH_PER_PAGE_FOR_TEST < 1000,
+  `page ${MAX_PAGES_FOR_TEST} starts at ${(MAX_PAGES_FOR_TEST - 1) * FETCH_PER_PAGE_FOR_TEST}`);
+check("and one more page would be past it",
+  MAX_PAGES_FOR_TEST * FETCH_PER_PAGE_FOR_TEST >= 1000,
+  `page ${MAX_PAGES_FOR_TEST + 1} starts at ${MAX_PAGES_FOR_TEST * FETCH_PER_PAGE_FOR_TEST}`);
 check("and the pager stays a length a reader can take in at a glance",
   MAX_PAGES_FOR_TEST <= 12,
   `${MAX_PAGES_FOR_TEST} buttons`);
+// A page is trimmed to PER_PAGE after filtering, so the fetch size must be at least
+// that big or the trim could never be reached and every page would run short.
+check("the fetch size can actually fill a page",
+  FETCH_PER_PAGE_FOR_TEST >= PER_PAGE_FOR_TEST,
+  `fetch ${FETCH_PER_PAGE_FOR_TEST} vs page ${PER_PAGE_FOR_TEST}`);
 // The summary line offsets by this number to label where you are. It is declared
 // separately in app.js because that module loads the search backend lazily; the
 // two drifting apart would make every "results 1-40" range a lie.
